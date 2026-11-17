@@ -94,6 +94,7 @@ class ContractFiles(BaseModel):
     env_example: Optional[IndexedFile] = None
     docker_compose: list[IndexedFile] = Field(default_factory=list)
     github_actions: list[IndexedFile] = Field(default_factory=list)
+    manifests: list[IndexedFile] = Field(default_factory=list)
     config_files: list[IndexedFile] = Field(default_factory=list)
     openapi_specs: list[IndexedFile] = Field(default_factory=list)
     other: list[IndexedFile] = Field(default_factory=list)
@@ -107,6 +108,7 @@ class ContractFiles(BaseModel):
             files.append(self.env_example)
         files.extend(self.docker_compose)
         files.extend(self.github_actions)
+        files.extend(self.manifests)
         files.extend(self.config_files)
         files.extend(self.openapi_specs)
         files.extend(self.other)

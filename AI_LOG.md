@@ -104,3 +104,57 @@ only the missing files as docstring-only stubs. No logic, no git commands.
 **Decision:** Scaffold is now complete. Next phase (Phase 1) will implement
 `models.py` (Pydantic data model) and begin the `indexer.py` implementation,
 preceded by pytest tests per CLAUDE.md rules.
+
+---
+
+## Entry 4 — Phase 1: models.py + indexer.py (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Claude Sonnet 4.6 (Thinking) |
+| **Phase** | Phase 1 — Data model and repo indexer |
+
+**Goal:** Write tests first (CLAUDE.md rule), then verify / complete `models.py`
+and `indexer.py`. Run pytest and fix all failures.
+
+**Prompt summary:** "Phase 1. Follow CLAUDE.md, ARCHITECTURE.md and PRD.md. Write
+tests first, then implement models.py (Finding, Patch, VerificationResult) and
+indexer.py. The indexer walks the repo, skips [excluded dirs], classifies files
+as contract or source. Handle unreadable files and encoding errors without
+crashing. Run pytest and fix failures."
+
+**What existed (from Phase 0):** Both `models.py` and `indexer.py` had
+substantial implementations already. `models.py` had all three core models
+(`Finding`, `Patch`, `VerificationResult`) plus `IndexedFile` and
+`ContractFiles`. `indexer.py` had the full walking / classification pipeline.
+
+**Tests written (before touching implementation):**
+- `tests/test_models.py` — 32 tests covering Finding, Patch,
+  VerificationResult, IndexedFile (validation, boundary values, enum
+  rejection, JSON round-trips)
+- `tests/test_indexer.py` — 54 tests covering skip logic, language detection,
+  contract classification, source classification, `read_file_safely` (encoding
+  safety, size limit), and `index_repo` integration (empty repo, unreadable
+  file, all skip categories)
+
+**First pytest run:** 86/86 passed — both modules were already correct.
+
+**Bugs fixed after tests revealed gaps / review:**
+1. `should_skip_dir` was skipping ALL dot-dirs with `startswith(".")`,
+   which would have blocked `.github/` and broken the GitHub Actions contract
+   pattern. Fixed to only skip dirs in `SKIP_DIRS`.
+2. `CONTRACT_PATTERNS` was missing `requirements.txt`, `package.json`,
+   `pyproject.toml` etc. (PRD F3 names them explicitly). Added `"manifests"`
+   category.
+3. Space typo in the requirements regex: `( txt|in)` → `(txt|in)`.
+4. `ContractFiles` model and `index_repo` dispatcher updated to handle
+   the new `manifests` category and include them in `all_contract_files()`.
+
+**Final pytest run:** 86/86 passed. No failures.
+
+**Human corrections:** None — session ran autonomously to green.
+
+**Decision:** Phase 1 complete. Phase 2 will implement the three auditors
+(`security.py`, `drift.py`, `slop.py`) with tests first.

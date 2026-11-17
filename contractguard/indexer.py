@@ -54,8 +54,17 @@ CONTRACT_PATTERNS = {
         re.compile(r"^compose\.(yml|yaml)$", re.IGNORECASE),
     ],
     "github_actions": [re.compile(r"^\.github/workflows/.*\.(yml|yaml)$", re.IGNORECASE)],
+    # Manifests: dep files are "contracts" listing what the project promises to use
+    "manifests": [
+        re.compile(r"^requirements([-_].*)?\.(txt|in)$", re.IGNORECASE),
+        re.compile(r"^package\.json$", re.IGNORECASE),
+        re.compile(r"^pyproject\.toml$", re.IGNORECASE),
+        re.compile(r"^Cargo\.toml$"),
+        re.compile(r"^go\.mod$"),
+        re.compile(r"^Gemfile$"),
+        re.compile(r"^pom\.xml$", re.IGNORECASE),
+    ],
     "config_files": [
-        re.compile(r"^\.env(\..*)?$", re.IGNORECASE),
         re.compile(r"^config\.(yml|yaml|json|toml|ini)$", re.IGNORECASE),
         re.compile(r"^settings\.(yml|yaml|json|toml|ini)$", re.IGNORECASE),
         re.compile(r"^\.?[a-z-]+\.config\.(js|ts|json)$", re.IGNORECASE),
@@ -135,8 +144,12 @@ MAX_FILE_SIZE = 1024 * 1024
 
 
 def should_skip_dir(dirname: str) -> bool:
-    """Check if a directory should be skipped."""
-    return dirname in SKIP_DIRS or dirname.startswith(".")
+    """Check if a directory should be skipped.
+
+    Only skips known dirs from SKIP_DIRS. Dot-dirs like .github must NOT be
+    blindly skipped because they may contain contract files (GitHub Actions).
+    """
+    return dirname in SKIP_DIRS
 
 
 def should_skip_file(filename: str) -> bool:

@@ -158,3 +158,76 @@ substantial implementations already. `models.py` had all three core models
 
 **Decision:** Phase 1 complete. Phase 2 will implement the three auditors
 (`security.py`, `drift.py`, `slop.py`) with tests first.
+
+---
+
+## Entry 5 — Phase 2: triage.py, reporter.py, cli.py, __main__.py (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Claude Sonnet 4.6 (Thinking) |
+| **Phase** | Phase 2 — Triage, reporter, CLI |
+
+**Goal:** Tests first. Implement `triage.py` (score = severity weight × confidence,
+dedupe, rank), `reporter.py` (Rich table + JSON + receipt), `cli.py` (Click
+`audit` command with auditor registry, `heal` placeholder), and verify
+`python -m contractguard audit .` works end-to-end.
+
+**Prompt summary:** "Phase 2. Follow CLAUDE.md and ARCHITECTURE.md. Tests first.
+Implement triage.py (score = severity weight × confidence, dedupe, sort
+descending), reporter.py (Rich table + JSON output), cli.py (Click 'audit'
+command with --json and heal placeholder; auditor registry where adding an
+auditor is a one-line change), __main__.py so 'python -m contractguard audit .'
+works. Run pytest."
+
+**What existed (from Phase 0/1):**
+- `triage.py` was fully implemented with SEVERITY_WEIGHTS, calculate_score,
+  deduplicate_findings, rank_findings, triage_findings — no changes needed.
+- `reporter.py` was a docstring-only stub.
+- `cli.py` was a docstring-only stub.
+- `__main__.py` already delegated to `cli.cli()`.
+
+**Tests written (before touching implementation):**
+- `tests/test_triage.py` — 24 tests covering SEVERITY_WEIGHTS ordering,
+  calculate_score (boundary values, cross-severity comparisons), deduplication
+  (key logic, highest-confidence winner, 3-way dedup), ranking (descending
+  scores, tie-breaking by severity then file), and the full pipeline.
+- `tests/test_reporter.py` — 17 tests covering findings_to_json (empty list,
+  field presence, None values, JSON validity), print_findings_table (smoke
+  tests for each severity / None line / None fix), and write_verification_receipt
+  (file creation, VERIFIED/ROLLED_BACK/strength content, empty results).
+- `tests/test_cli.py` — 12 tests covering audit command (exit codes, output,
+  --json, --no-llm, missing path), heal placeholder, and CLI group help.
+
+**Implementations written:**
+- `reporter.py`: `findings_to_json` (Pydantic model_dump → JSON),
+  `print_findings_table` (Rich rounded table with colour-coded severity badges,
+  summary line), `write_verification_receipt` (Markdown table + detail section).
+- `cli.py`: `AUDITOR_REGISTRY` list of `(name, fn, input_mode)` tuples — adding
+  an auditor is literally one line. `_run_auditors` dispatches by mode and
+  catches auditor exceptions so the CLI never crashes. `audit` command indexes,
+  runs registry, triages, then outputs Rich table or clean JSON (stdout only,
+  no stderr noise in JSON mode). `heal` placeholder. `main()` console-script
+  entry point.
+
+**Bugs found and fixed:**
+1. Initial pytest run: 140/142 — 2 `--json` tests failed because `CliRunner()`
+   mixes stdout and stderr by default; Rich progress messages on stderr were
+   interleaved with the JSON on stdout corrupting it.
+   Fix: (a) CLI suppresses all stderr output in `--json` mode so stdout is
+   clean; (b) JSON tests now use `CliRunner(mix_stderr=False)`.
+
+**Final pytest run:** 142/142 passed in 1.54s.
+
+**Live smoke test:** `python -m contractguard audit .` on the ContractGuard
+repo itself produced a 29-finding Rich table (mostly the security auditor's own
+regex patterns firing against the patterns file — expected false-positive; will
+be tuned with sample-broken-app in Phase 3).
+
+**Human corrections:** None — session ran autonomously to green.
+
+**Decision:** Phase 2 complete. Phase 3 will implement the three auditors
+(`security.py` already substantial, `drift.py` and `slop.py` need logic),
+the `sandbox.py` shadow-worktree verification gate, and `heal`.

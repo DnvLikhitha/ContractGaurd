@@ -1,0 +1,13 @@
+{
+  "name": "ContractGuard",
+  "track": "AI triage",
+  "hackathon": "Mycrobo Arena",
+  "dates": "2026-11-17 / 2026-11-18",
+  "repo": "https://github.com/TODO/contractguard",
+  "demo_video": "TODO",
+  "team": ["TODO"],
+  "description": "Audits a repository as a living contract – cross-checks docs, env templates and manifests against source code, triages findings, and verifies every fix in a shadow git worktree before keeping it.",
+  "entry_command": "contractguard audit <path>",
+  "tech_stack": ["Python 3.10+", "Click", "Rich", "Pydantic", "Groq (optional)"],
+  "status": "in-progress"
+}

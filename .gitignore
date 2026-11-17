@@ -1,0 +1,45 @@
+# ── Python artifacts ─────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+
+# ── Caches and coverage ───────────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── Node ─────────────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Real secrets (never committed) ───────────────────────────────────────────
+.env
+.env.local
+*.pem
+
+# ── Tool temp dirs ────────────────────────────────────────────────────────────
+.contractguard-tmp/
+cg-shadow*/
+
+# ── Claude / agent tooling ────────────────────────────────────────────────────
+.claude/settings.local.json
+
+# ── Editor and OS files ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# ── Intentionally NOT ignored ─────────────────────────────────────────────────
+# CLAUDE.md  AGENTS.md  PRD.md  ARCHITECTURE.md  TECH_STACK.md
+# AI_LOG.md  arena.json  README.md  transcripts/
+2026-11-18-003405-never-run-git-add-commit-or-push-i-handle-all(1st).txt
+CLAUDE.md
+PRD.md
+ARCHITECTURE.md

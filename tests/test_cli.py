@@ -61,6 +61,18 @@ class TestAuditCommand:
             for field in ("id", "category", "severity", "confidence", "file", "title"):
                 assert field in item, f"Missing field {field!r} in {item}"
 
+    def test_audit_detects_drift_via_cli(self, tmp_path):
+        make_repo(tmp_path)
+        # Add an undocumented env var to app.py
+        (tmp_path / "src" / "app.py").write_text("import os\nDB = os.getenv('SECRET_UNLISTED_TOKEN')\n")
+        runner = CliRunner(mix_stderr=False)
+        result = runner.invoke(cli, ["audit", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        drift_items = [d for d in data if d["category"] == "drift"]
+        assert len(drift_items) >= 1
+        assert any("SECRET_UNLISTED_TOKEN" in d["title"] for d in drift_items)
+
     def test_audit_nonexistent_path_exits_nonzero(self, tmp_path):
         runner = CliRunner()
         result = runner.invoke(cli, ["audit", str(tmp_path / "does_not_exist")])

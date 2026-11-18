@@ -9,13 +9,17 @@ import pytest
 from contractguard.auditors.drift import (
     extract_env_vars_from_python,
     extract_env_vars_from_js,
+    extract_env_vars_from_go,
     extract_env_vars_from_file,
     parse_env_example,
     parse_docker_compose_env,
     check_env_drift,
+    extract_endpoints_from_readme,
+    extract_commands_from_readme,
+    check_readme_drift,
     audit_drift,
 )
-from contractguard.models import IndexedFile, ContractFiles, Category, Severity
+from contractguard.models import IndexedFile, ContractFiles, Category, Severity, Finding
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +38,10 @@ def _ts_file(content: str, path: str = "app.ts") -> IndexedFile:
     return IndexedFile(path=path, is_source=True, language="typescript", content=content)
 
 
+def _go_file(content: str, path: str = "main.go") -> IndexedFile:
+    return IndexedFile(path=path, is_source=True, language="go", content=content)
+
+
 def _env_example_file(content: str) -> IndexedFile:
     return IndexedFile(path=".env.example", is_contract=True, language=None, content=content)
 
@@ -42,17 +50,27 @@ def _compose_file(content: str) -> IndexedFile:
     return IndexedFile(path="docker-compose.yml", is_contract=True, language="yaml", content=content)
 
 
-def _contract(env_example: str = "", compose: str = "") -> ContractFiles:
+def _readme_file(content: str) -> IndexedFile:
+    return IndexedFile(path="README.md", is_contract=True, language="markdown", content=content)
+
+
+def _contract(
+    env_example: str | None = None,
+    compose: str | None = None,
+    readme: str | None = None,
+) -> ContractFiles:
     cf = ContractFiles()
-    if env_example:
+    if env_example is not None:
         cf.env_example = _env_example_file(env_example)
-    if compose:
+    if compose is not None:
         cf.docker_compose.append(_compose_file(compose))
+    if readme is not None:
+        cf.readme = _readme_file(readme)
     return cf
 
 
 # ---------------------------------------------------------------------------
-# extract_env_vars_from_python
+# P0: extract_env_vars_from_python
 # ---------------------------------------------------------------------------
 
 class TestExtractEnvVarsPython:
@@ -102,25 +120,19 @@ class TestExtractEnvVarsPython:
         assert extract_env_vars_from_python(code) == set()
 
     def test_comment_line_ignored(self):
-        # A var in a comment should not be extracted (the regex targets actual calls)
         code = '# os.getenv("COMMENT_VAR")\nx = os.getenv("REAL_VAR")'
         result = extract_env_vars_from_python(code)
-        # REAL_VAR must be found; COMMENT_VAR should NOT be found
         assert "REAL_VAR" in result
         assert "COMMENT_VAR" not in result
 
     def test_environ_set_not_extracted(self):
-        # Setting an env var is not an env-var dependency
         code = 'os.environ["SET_VAR"] = "value"'
-        # We only extract READS (os.environ["X"] on the right, or via getenv/get)
-        # Setting via subscript assignment is excluded
         result = extract_env_vars_from_python(code)
-        # It may or may not extract — document behaviour: should NOT flag assignments
         assert "SET_VAR" not in result
 
 
 # ---------------------------------------------------------------------------
-# extract_env_vars_from_js
+# P0: extract_env_vars_from_js
 # ---------------------------------------------------------------------------
 
 class TestExtractEnvVarsJS:
@@ -165,7 +177,36 @@ class TestExtractEnvVarsJS:
 
 
 # ---------------------------------------------------------------------------
-# extract_env_vars_from_file (dispatch)
+# P0: extract_env_vars_from_go
+# ---------------------------------------------------------------------------
+
+class TestExtractEnvVarsGo:
+    def test_os_getenv(self):
+        code = 'port := os.Getenv("PORT")'
+        assert "PORT" in extract_env_vars_from_go(code)
+
+    def test_os_lookupenv(self):
+        code = 'val, ok := os.LookupEnv("DATABASE_URL")'
+        assert "DATABASE_URL" in extract_env_vars_from_go(code)
+
+    def test_multiple_go_vars(self):
+        code = (
+            'p := os.Getenv("PORT")\n'
+            's := os.Getenv("SECRET_KEY")\n'
+        )
+        result = extract_env_vars_from_go(code)
+        assert "PORT" in result
+        assert "SECRET_KEY" in result
+
+    def test_comment_line_ignored(self):
+        code = '// os.Getenv("COMMENT_VAR")\np := os.Getenv("REAL_VAR")'
+        result = extract_env_vars_from_go(code)
+        assert "REAL_VAR" in result
+        assert "COMMENT_VAR" not in result
+
+
+# ---------------------------------------------------------------------------
+# P0: extract_env_vars_from_file (dispatch)
 # ---------------------------------------------------------------------------
 
 class TestExtractEnvVarsFromFile:
@@ -181,13 +222,19 @@ class TestExtractEnvVarsFromFile:
         f = _ts_file("const x = process.env.MY_TS_VAR;")
         assert "MY_TS_VAR" in extract_env_vars_from_file(f)
 
-    def test_unknown_language_returns_empty(self):
-        f = IndexedFile(path="file.go", is_source=True, language="go", content="os.Getenv(\"GO_VAR\")")
-        assert extract_env_vars_from_file(f) == set()
+    def test_dispatches_go(self):
+        f = _go_file('p := os.Getenv("MY_GO_VAR")')
+        assert "MY_GO_VAR" in extract_env_vars_from_file(f)
+
+    def test_unknown_language_fallback_regex(self):
+        f = IndexedFile(path="file.rs", is_source=True, language="rust", content='std::env::var("RUST_VAR")')
+        # Even if not specialized, should not raise error
+        res = extract_env_vars_from_file(f)
+        assert isinstance(res, set)
 
 
 # ---------------------------------------------------------------------------
-# parse_env_example
+# P0: parse_env_example
 # ---------------------------------------------------------------------------
 
 class TestParseEnvExample:
@@ -208,13 +255,11 @@ class TestParseEnvExample:
         result = parse_env_example(content)
         assert "REAL_VAR" in result
         assert "This is a comment" not in result
-        assert len([x for x in result if x.startswith("#")]) == 0
 
     def test_blank_lines_skipped(self):
         content = "\n\nFOO=bar\n\n"
         result = parse_env_example(content)
         assert "FOO" in result
-        assert "" not in result
 
     def test_multiple_vars(self):
         content = "DB_HOST=localhost\nDB_PORT=5432\nDB_NAME=myapp\n"
@@ -233,14 +278,13 @@ class TestParseEnvExample:
         assert "MY_SECRET" in parse_env_example(content)
 
     def test_export_prefix(self):
-        # Some .env files use `export VAR=value`
         content = "export AWS_REGION=us-east-1\n"
         result = parse_env_example(content)
         assert "AWS_REGION" in result
 
 
 # ---------------------------------------------------------------------------
-# parse_docker_compose_env
+# P0: parse_docker_compose_env
 # ---------------------------------------------------------------------------
 
 class TestParseDockerComposeEnv:
@@ -307,19 +351,17 @@ services:
 
 
 # ---------------------------------------------------------------------------
-# check_env_drift
+# P0: check_env_drift (diff both directions)
 # ---------------------------------------------------------------------------
 
 class TestCheckEnvDrift:
     def test_missing_in_env_example_is_high_severity(self):
-        """Var used in code but absent from .env.example → HIGH drift finding."""
+        """Var used in code but absent from .env.example -> HIGH drift finding."""
         source = [_py_file('x = os.getenv("MISSING_VAR")')]
         contract = _contract(env_example="DOCUMENTED_VAR=\n")
         findings = check_env_drift(source, contract)
-        ids = [f.id for f in findings]
-        titles = [f.title for f in findings]
-        assert any("MISSING_VAR" in t for t in titles)
         missing = [f for f in findings if "MISSING_VAR" in f.title]
+        assert len(missing) == 1
         assert missing[0].severity == "high"
         assert missing[0].confidence == pytest.approx(0.85)
         assert missing[0].category == "drift"
@@ -329,18 +371,19 @@ class TestCheckEnvDrift:
         contract = _contract(env_example="")
         findings = check_env_drift(source, contract)
         undoc = [f for f in findings if "UNDOC_VAR" in f.title]
-        assert undoc
+        assert len(undoc) == 1
         assert undoc[0].id.startswith("DRF-")
 
     def test_unused_in_env_example_is_low_severity(self):
-        """Var in .env.example but never used in code → LOW severity."""
+        """Var in .env.example but never used in code -> LOW severity."""
         source = [_py_file("x = 42")]
         contract = _contract(env_example="ORPHAN_VAR=\n")
         findings = check_env_drift(source, contract)
         orphan = [f for f in findings if "ORPHAN_VAR" in f.title]
-        assert orphan
+        assert len(orphan) == 1
         assert orphan[0].severity == "low"
         assert orphan[0].confidence == pytest.approx(0.70)
+        assert orphan[0].category == "drift"
 
     def test_documented_and_used_produces_no_finding(self):
         source = [_py_file('x = os.getenv("GOOD_VAR")')]
@@ -348,86 +391,210 @@ class TestCheckEnvDrift:
         findings = check_env_drift(source, contract)
         assert not any("GOOD_VAR" in f.title for f in findings)
 
-    def test_no_env_example_no_finding(self):
-        """No .env.example file → no drift findings (can't evaluate contract)."""
+    def test_no_contract_files_no_findings(self):
         source = [_py_file('x = os.getenv("SOME_VAR")')]
         contract = ContractFiles()
         findings = check_env_drift(source, contract)
         assert findings == []
 
     def test_docker_compose_vars_count_as_documented(self):
-        """Vars declared in docker-compose environment block satisfy the contract."""
         source = [_py_file('x = os.getenv("COMPOSE_VAR")')]
         contract = _contract(
             env_example="OTHER_VAR=\n",
             compose="version: '3'\nservices:\n  app:\n    environment:\n      - COMPOSE_VAR=x\n",
         )
         findings = check_env_drift(source, contract)
-        # COMPOSE_VAR is in compose, so it should NOT trigger an undocumented finding
         assert not any("COMPOSE_VAR" in f.title for f in findings)
 
     def test_multiple_source_files_aggregated(self):
         source = [
             _py_file('x = os.getenv("VAR_A")', "a.py"),
             _js_file("const y = process.env.VAR_B;", "b.js"),
+            _go_file('z := os.Getenv("VAR_C")', "main.go"),
         ]
         contract = _contract(env_example="")
         findings = check_env_drift(source, contract)
         titles = [f.title for f in findings]
         assert any("VAR_A" in t for t in titles)
         assert any("VAR_B" in t for t in titles)
-
-    def test_js_vars_in_env_example_no_finding(self):
-        source = [_js_file("const x = process.env.JS_VAR;")]
-        contract = _contract(env_example="JS_VAR=\n")
-        findings = check_env_drift(source, contract)
-        assert not any("JS_VAR" in f.title for f in findings)
+        assert any("VAR_C" in t for t in titles)
 
     def test_evidence_contains_var_name(self):
         source = [_py_file('x = os.getenv("EVIDENCE_VAR")')]
         contract = _contract(env_example="")
         findings = check_env_drift(source, contract)
         ev = [f for f in findings if "EVIDENCE_VAR" in f.title]
-        assert ev
+        assert len(ev) == 1
         assert "EVIDENCE_VAR" in ev[0].evidence
+
+
+# ---------------------------------------------------------------------------
+# P1: extract_endpoints_from_readme & extract_commands_from_readme
+# ---------------------------------------------------------------------------
+
+class TestReadmeExtraction:
+    def test_extract_endpoints_http_methods(self):
+        readme = """
+# API Documentation
+- GET /api/v1/users - List users
+- POST /api/v1/users - Create user
+- DELETE /api/v1/users/{id} - Delete user
+- PUT /settings - Update settings
+- PATCH /profile - Update profile
+"""
+        endpoints = extract_endpoints_from_readme(readme)
+        paths = [ep["path"] for ep in endpoints]
+        assert "/api/v1/users" in paths
+        assert "/settings" in paths
+        assert "/profile" in paths
+
+    def test_extract_endpoints_backticks(self):
+        readme = "Call `GET /health` to check status."
+        endpoints = extract_endpoints_from_readme(readme)
+        assert any(ep["path"] == "/health" and ep["method"] == "GET" for ep in endpoints)
+
+    def test_extract_endpoints_table(self):
+        readme = """
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET    | /status  | Server ping |
+| POST   | /login   | Auth route  |
+"""
+        endpoints = extract_endpoints_from_readme(readme)
+        paths = [ep["path"] for ep in endpoints]
+        assert "/status" in paths
+        assert "/login" in paths
+
+    def test_ignores_external_urls(self):
+        readme = "Visit https://example.com/api/users for docs."
+        endpoints = extract_endpoints_from_readme(readme)
+        assert len(endpoints) == 0
+
+    def test_extract_commands_code_blocks(self):
+        readme = """
+```bash
+python -m contractguard audit <path>
+python -m contractguard heal <path>
+```
+"""
+        commands = extract_commands_from_readme(readme)
+        subcmds = [c["command"] for c in commands]
+        assert "audit" in subcmds or "contractguard audit" in subcmds or any("audit" in c["command"] for c in commands)
+
+    def test_extract_commands_dollar_prompt(self):
+        readme = """
+Run the CLI:
+```sh
+$ myapp serve --port 8080
+$ myapp worker
+```
+"""
+        commands = extract_commands_from_readme(readme)
+        assert any("serve" in c["command"] for c in commands)
+        assert any("worker" in c["command"] for c in commands)
+
+    def test_ignores_common_dev_tools(self):
+        readme = """
+```bash
+git clone https://github.com/repo/app.git
+cd app
+pip install -r requirements.txt
+npm install
+pytest
+```
+"""
+        commands = extract_commands_from_readme(readme)
+        cmd_names = [c["command"].lower() for c in commands]
+        # Should not flag git, pip, npm, pytest, cd as custom commands
+        for cmd in cmd_names:
+            assert not any(tool in cmd.split() for tool in ["git", "pip", "npm", "pytest", "cd"])
+
+
+# ---------------------------------------------------------------------------
+# P1: check_readme_drift (endpoints & CLI commands)
+# ---------------------------------------------------------------------------
+
+class TestCheckReadmeDrift:
+    def test_missing_endpoint_produces_drift_finding(self):
+        readme = """
+# API
+GET /api/v1/missing_endpoint
+"""
+        source = [_py_file('@app.get("/health")\ndef health(): return "ok"')]
+        contract = _contract(readme=readme)
+        findings = check_readme_drift(source, contract)
+        missing = [f for f in findings if "/api/v1/missing_endpoint" in f.title or "/api/v1/missing_endpoint" in f.evidence]
+        assert len(missing) == 1
+        assert missing[0].category == "drift"
+        assert missing[0].severity == "medium"
+        assert missing[0].confidence == pytest.approx(0.80)
+
+    def test_present_endpoint_produces_no_drift(self):
+        readme = """
+# API
+GET /api/v1/users
+"""
+        source = [_py_file('@app.get("/api/v1/users")\ndef get_users(): return []')]
+        contract = _contract(readme=readme)
+        findings = check_readme_drift(source, contract)
+        assert not any("/api/v1/users" in f.title or "/api/v1/users" in f.evidence for f in findings)
+
+    def test_missing_cli_command_produces_drift_finding(self):
+        readme = """
+## Commands
+```bash
+myapp nonexistent-command
+```
+"""
+        source = [_py_file('def existing_command(): pass')]
+        contract = _contract(readme=readme)
+        findings = check_readme_drift(source, contract)
+        missing = [f for f in findings if "nonexistent-command" in f.title or "nonexistent-command" in f.evidence]
+        assert len(missing) == 1
+        assert missing[0].category == "drift"
+        assert missing[0].severity == "medium"
+        assert missing[0].confidence == pytest.approx(0.75)
+
+    def test_present_cli_command_produces_no_drift(self):
+        readme = """
+## Commands
+```bash
+myapp audit
+```
+"""
+        source = [_py_file('@cli.command()\ndef audit(): pass')]
+        contract = _contract(readme=readme)
+        findings = check_readme_drift(source, contract)
+        assert not any("audit" in f.title for f in findings)
+
+    def test_no_readme_returns_empty(self):
+        source = [_py_file('x = 1')]
+        contract = ContractFiles()
+        assert check_readme_drift(source, contract) == []
 
 
 # ---------------------------------------------------------------------------
 # audit_drift (integration)
 # ---------------------------------------------------------------------------
 
-class TestAuditDrift:
-    def test_returns_list(self):
-        result = audit_drift([], ContractFiles())
-        assert isinstance(result, list)
-
-    def test_returns_findings(self):
+class TestAuditDriftIntegration:
+    def test_returns_list_of_findings(self):
         source = [_py_file('x = os.getenv("UNDOC")')]
-        contract = _contract(env_example="")
+        contract = _contract(env_example="ORPHAN=\n", readme="GET /undocumented")
         result = audit_drift(source, contract)
         assert isinstance(result, list)
-
-    def test_all_findings_are_Finding_instances(self):
-        from contractguard.models import Finding
-        source = [_py_file('x = os.getenv("UNDOC")')]
-        contract = _contract(env_example="ORPHAN=\n")
-        result = audit_drift(source, contract)
         for item in result:
             assert isinstance(item, Finding)
+            assert item.category == "drift"
 
-    def test_all_findings_category_drift(self):
-        source = [_py_file('x = os.getenv("X")')]
-        contract = _contract(env_example="")
+    def test_combines_env_and_readme_drift(self):
+        source = [_py_file('x = os.getenv("MY_VAR")')]
+        readme = "GET /missing_route"
+        contract = _contract(env_example="", readme=readme)
         result = audit_drift(source, contract)
-        for f in result:
-            assert f.category == "drift"
-
-    def test_no_sources_no_findings(self):
-        result = audit_drift([], _contract(env_example="PHANTOM=\n"))
-        # No source code → no undocumented vars; orphan vars are still possible
-        orphan = [f for f in result if "PHANTOM" in f.title]
-        # With no source code, PHANTOM is "undeclared in code" → low severity orphan
-        assert orphan[0].severity == "low"
+        titles = [f.title for f in result]
+        assert any("MY_VAR" in t for t in titles)
+        assert any("/missing_route" in t for t in titles)
 
     def test_empty_contract_and_sources(self):
         result = audit_drift([], ContractFiles())

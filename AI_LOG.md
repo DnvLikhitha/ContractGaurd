@@ -286,3 +286,64 @@ conditions), plus skipping-rules integration (5) and audit_security integration
 (already present from Phase 2 as `("security", audit_security, "source")`).
 Phase 4 will implement drift auditor (env-contract and README-to-code) and
 slop auditor (unused deps, orphaned files), then sandbox.py for the heal gate.
+
+---
+
+## Entry 7 — Phase 4: drift auditor (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Gemini 3.8 Flash |
+| **Phase** | Phase 4 — Drift auditor (env-contract & README-to-code) |
+
+**Goal:** Implement `contractguard/auditors/drift.py` covering P0 (env var extraction
+across Python, JS/TS, Go vs `.env.example` and `docker-compose` environment blocks in both directions)
+and P1 (README endpoints and CLI commands extraction vs source code symbols). Write tests first.
+Ensure registration in CLI and run pytest. No git commands.
+
+**Prompt summary:** "Phase 4. Follow CLAUDE.md and ARCHITECTURE.md. Tests first, then
+auditors/drift.py. P0: extract env var reads (os.getenv, os.environ[...], os.environ.get,
+process.env.X, os.Getenv) and diff against .env.example and docker-compose environment
+entries, in both directions. P1: extract endpoints and CLI commands from README.md and
+check for a matching route or symbol in code. Symbol matching only; skip TF-IDF unless
+trivial. Register in the CLI. Run pytest. Append a phase entry to AI_LOG.md. Do not run
+any git commands. Stop and summarize."
+
+**Rules implemented (deterministic, offline, no API key):**
+
+| ID | Rule / Pattern | Severity | Confidence |
+|----|----------------|----------|------------|
+| DRF-001 | Env var read in code but absent from contract files (`.env.example` / `docker-compose`) | HIGH | 0.85 |
+| DRF-002 | Env var declared in contract file but never read in source code | LOW | 0.70 |
+| DRF-003 | Documented HTTP endpoint in README not found in source code | MEDIUM | 0.80 |
+| DRF-004 | Documented CLI command/subcommand in README not found in code symbols | MEDIUM | 0.75 |
+
+**Features implemented:**
+- Python env var extraction: AST-based visitor for `os.getenv`, `os.environ.get`, and
+  `os.environ[...]` (subscript `Load` context only; excludes `Store` assignments), with regex fallback.
+- JS/TS env var extraction: `process.env.VAR`, `process.env['VAR']`, `import.meta.env.VAR`,
+  `import.meta.env['VAR']`.
+- Go env var extraction: `os.Getenv("VAR")`, `os.LookupEnv("VAR")`.
+- Contract parsers:
+  - `.env.example`: parses `KEY=...` and `export KEY=...`, ignores comments and blank lines.
+  - `docker-compose.yml`: YAML parsing of `services.<svc>.environment` (both list and dict syntaxes).
+- README drift:
+  - Extracts HTTP endpoints (`GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD /path`) from prose, lists, backticks, and tables; checks against source route paths.
+  - Extracts CLI commands/subcommands (`python -m <pkg> <cmd>`, `$ <app> <cmd>`, etc.) ignoring common dev tools (`git`, `pip`, `npm`, `pytest`, `docker`); checks against code symbols.
+- CLI integration: verified registered in `AUDITOR_REGISTRY` as `("drift", audit_drift, "both")`.
+
+**Tests written (before implementation):**
+- `tests/test_drift.py` — 68 tests covering Python/JS/Go extractors, file dispatch, contract parsers, bidirectional env drift, README endpoint & command extractors, README drift, and integration.
+- `tests/test_cli.py` — added `test_audit_detects_drift_via_cli` testing CLI end-to-end drift reporting.
+
+**Pytest run:**
+- 301/301 tests passed in 1.50s (68 drift + 13 CLI + 90 security + 27 triage + 17 reporter + 58 indexer + 28 models). Zero failures.
+
+**Human corrections:** None.
+
+**Decision:** Phase 4 complete. Next is Phase 5: Slop auditor (`auditors/slop.py` for
+orphaned files and unused manifest dependencies) with tests first, followed by Phase 6
+(`sandbox.py` shadow worktree verification gate).
+

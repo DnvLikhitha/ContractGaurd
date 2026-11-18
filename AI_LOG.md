@@ -231,3 +231,58 @@ be tuned with sample-broken-app in Phase 3).
 **Decision:** Phase 2 complete. Phase 3 will implement the three auditors
 (`security.py` already substantial, `drift.py` and `slop.py` need logic),
 the `sandbox.py` shadow-worktree verification gate, and `heal`.
+
+---
+
+## Entry 6 — Phase 3: security auditor rewrite (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Claude Sonnet 4.6 (Thinking) |
+| **Phase** | Phase 3 — Security auditor |
+
+**Goal:** Complete rewrite of `auditors/security.py` with precise, well-calibrated
+detection rules. Tests first with inline fixture snippets.
+
+**Rules implemented (all deterministic, no API key):**
+
+| ID | Pattern | Severity | Confidence |
+|----|---------|----------|------------|
+| AWS-001 | AWS access key (AKIA…) | CRITICAL | 0.95 |
+| AWS-002 | AWS secret access key (40-char) | CRITICAL | 0.95 |
+| KEY-001 | PEM private key block | CRITICAL | 0.99 |
+| KEY-002 | Generic API/secret key (hardcoded) | CRITICAL | 0.80 |
+| KEY-003 | Hardcoded Bearer/JWT token | CRITICAL | 0.80 |
+| DSN-001 | DB DSN with embedded password | CRITICAL | 0.90 |
+| INS-001 | DEBUG=True | HIGH | 0.90 |
+| INS-002 | CORS wildcard (*) | HIGH | 0.85 |
+| INS-003 | verify=False | HIGH | 0.90 |
+| INS-004 | md5/sha1 in password context | MEDIUM | 0.75 |
+| INS-005 | Bind to 0.0.0.0 | MEDIUM | 0.70 |
+
+**Skip rules:** lockfiles (10 known names), test files (prefix/suffix/dir),
+placeholder values (regex list including changeme/xxx/example*/todo/etc.),
+comment-only lines per language.
+
+**Tests written (before implementation):** `tests/test_security.py` — 90 tests
+covering is_lockfile (8), is_test_file (8), is_placeholder (9), mask_secrets
+(4), and one test class per rule (severity, confidence, evidence masking, skip
+conditions), plus skipping-rules integration (5) and audit_security integration
+(4).
+
+**First pytest run after implementation:** 86/90 — 4 failures fixed:
+1. `is_placeholder("example_value")` — regex used exact `example`, changed to `example.*` prefix match.
+2. Bearer token test fixture used short JWT segments (7, 3 chars) — relaxed min-length from 20 to 3 per segment.
+3. CORS `headers["Access-Control-Allow-Origin"] = "*"` pattern — added dict-key assignment regex to `_CORS_PATTERNS`.
+4. `sha1(user_pass)` — `\b` word boundary doesn't work inside `user_pass` (underscore is `\w`); changed `_PASSWORD_CTX` from `\b...\b` to `(?:...)` without boundary.
+
+**Final test run:** 232/232 passed (90 security + 142 from Phases 1–2).
+
+**Human corrections:** None — session ran autonomously to green.
+
+**Decision:** Phase 3 complete. Security auditor is wired in the CLI registry
+(already present from Phase 2 as `("security", audit_security, "source")`).
+Phase 4 will implement drift auditor (env-contract and README-to-code) and
+slop auditor (unused deps, orphaned files), then sandbox.py for the heal gate.

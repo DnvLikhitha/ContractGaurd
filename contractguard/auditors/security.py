@@ -1,267 +1,621 @@
-"""Security auditor: detects secrets, insecure defaults, and dangerous patterns."""
+"""
+contractguard.auditors.security
+================================
+Deterministic security auditor — no API key required.
 
-import ast
+Rule table (all regex; AST supplements Python files):
+  ID          Pattern                    Severity   Confidence
+  ─────────── ─────────────────────────  ─────────  ──────────
+  AWS-001     AWS access key (AKIA…)     CRITICAL   0.95
+  AWS-002     AWS secret access key      CRITICAL   0.95
+  KEY-001     Private key PEM block      CRITICAL   0.99
+  KEY-002     Generic API/secret key     CRITICAL   0.80
+  KEY-003     Bearer token (hardcoded)   CRITICAL   0.80
+  DSN-001     DB DSN with password       CRITICAL   0.90
+  INS-001     DEBUG=True                 HIGH       0.90
+  INS-002     CORS wildcard              HIGH       0.85
+  INS-003     verify=False               HIGH       0.90
+  INS-004     md5/sha1 on password ctx   MEDIUM     0.75
+  INS-005     Bind to 0.0.0.0           MEDIUM     0.70
+
+Skip rules (applied before every check):
+  - Lockfiles  (poetry.lock, package-lock.json, etc.)
+  - Test files (tests/, spec/, *_test.py, *.spec.js, etc.)
+  - Placeholder values ("changeme", "your_key_here", etc.)
+  - Comment-only lines
+"""
+
+from __future__ import annotations
+
 import re
 from pathlib import Path
 from typing import Optional
 
-from contractguard.models import Finding, Category, Severity, IndexedFile
+from contractguard.models import Category, Finding, IndexedFile, Severity
+
+# ---------------------------------------------------------------------------
+# Skip-list helpers
+# ---------------------------------------------------------------------------
+
+_LOCKFILE_NAMES = frozenset({
+    "poetry.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "Pipfile.lock", "Cargo.lock", "Gemfile.lock", "composer.lock",
+    "packages.lock.json", "bun.lockb",
+})
+
+_PLACEHOLDER_PATTERNS = re.compile(
+    r"^(changeme|your[_\-]?key[_\-]?here|placeholder|xxx+|todo|replace[_\-]?me|"
+    r"insert[_\-]?here|example.*|sample|test|dummy|fake|none|null|secret|pass|"
+    r"password|<[^>]+>|\.\.\.|add[_\-]?your|your[_\-]?secret)$",
+    re.IGNORECASE,
+)
+
+_COMMENT_PREFIXES: dict[str | None, tuple[str, ...]] = {
+    "python":     ("#",),
+    "ruby":       ("#",),
+    "bash":       ("#",),
+    "powershell": ("#",),
+    "javascript": ("//", "/*", "*"),
+    "typescript": ("//", "/*", "*"),
+    "go":         ("//", "/*"),
+    "rust":       ("//", "/*"),
+    "java":       ("//", "/*", "*"),
+    "csharp":     ("//", "/*", "*"),
+    "cpp":        ("//", "/*", "*"),
+    "c":          ("//", "/*", "*"),
+    "html":       ("<!--",),
+    "xml":        ("<!--",),
+}
 
 
-# Secret patterns (regex)
-SECRET_PATTERNS = [
-    (re.compile(r"(?i)(api[_-]?key|apikey)\s*[=:]\s*['\"][a-zA-Z0-9_-]{20,}['\"]"), "API Key"),
-    (re.compile(r"(?i)(secret[_-]?key|secretkey)\s*[=:]\s*['\"][a-zA-Z0-9_-]{20,}['\"]"), "Secret Key"),
-    (re.compile(r"(?i)(access[_-]?token|accesstoken)\s*[=:]\s*['\"][a-zA-Z0-9_-]{20,}['\"]"), "Access Token"),
-    (re.compile(r"(?i)(auth[_-]?token|authtoken)\s*[=:]\s*['\"][a-zA-Z0-9_-]{20,}['\"]"), "Auth Token"),
-    (re.compile(r"(?i)(password|passwd|pwd)\s*[=:]\s*['\"][^'\"]{8,}['\"]"), "Password"),
-    (re.compile(r"(?i)(private[_-]?key|privatekey)\s*[=:]\s*['\"][^'\"]{20,}['\"]"), "Private Key"),
-    (re.compile(r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"), "Private Key Block"),
-    (re.compile(r"(?i)aws[_-]?access[_-]?key[_-]?id\s*[=:]\s*['\"][A-Z0-9]{20}['\"]"), "AWS Access Key ID"),
-    (re.compile(r"(?i)aws[_-]?secret[_-]?access[_-]?key\s*[=:]\s*['\"][a-zA-Z0-9/+=]{40}['\"]"), "AWS Secret Access Key"),
-    (re.compile(r"(?i)github[_-]?token\s*[=:]\s*['\"][a-zA-Z0-9_]{35,}['\"]"), "GitHub Token"),
-    (re.compile(r"(?i)slack[_-]?token\s*[=:]\s*['\"][a-zA-Z0-9-]{20,}['\"]"), "Slack Token"),
-    (re.compile(r"(?i)stripe[_-]?key\s*[=:]\s*['\"][a-zA-Z0-9]{20,}['\"]"), "Stripe Key"),
-    # Generic high-entropy strings (potential secrets)
-    (re.compile(r"['\"][a-zA-Z0-9+/]{40,}={0,2}['\"]"), "High-entropy string (possible secret)"),
-]
+def is_lockfile(path: str) -> bool:
+    """Return True if the file is a known lockfile that should be skipped."""
+    return Path(path).name in _LOCKFILE_NAMES
 
-# Insecure default patterns
-INSECURE_PATTERNS = [
-    # Python
-    (re.compile(r"(?i)DEBUG\s*=\s*True"), "DEBUG=True in production", Severity.HIGH, 0.9),
-    (re.compile(r"(?i)verify\s*=\s*False"), "SSL verify=False", Severity.HIGH, 0.95),
-    (re.compile(r"(?i)check_hostname\s*=\s*False"), "SSL check_hostname=False", Severity.HIGH, 0.9),
-    (re.compile(r"(?i)ssl_verify\s*=\s*False"), "SSL verify disabled", Severity.HIGH, 0.9),
-    (re.compile(r"0\.0\.0\.0"), "Binding to 0.0.0.0 (all interfaces)", Severity.MEDIUM, 0.7),
-    (re.compile(r"(?i)cors.*\*"), "CORS allows all origins (*)", Severity.HIGH, 0.8),
-    (re.compile(r"(?i)allow_origin\s*[=:]\s*['\"]\*['\"]"), "CORS allow_origin=*", Severity.HIGH, 0.85),
-    (re.compile(r"md5|sha1", re.IGNORECASE), "Weak hash algorithm (MD5/SHA1)", Severity.MEDIUM, 0.6),
-    (re.compile(r"(?i)pickle\.loads?\s*\("), "Unsafe pickle deserialization", Severity.CRITICAL, 0.85),
-    (re.compile(r"(?i)yaml\.load\s*\((?!.*Loader=)"), "Unsafe YAML load (no SafeLoader)", Severity.HIGH, 0.8),
-    (re.compile(r"(?i)eval\s*\("), "Use of eval()", Severity.HIGH, 0.7),
-    (re.compile(r"(?i)exec\s*\("), "Use of exec()", Severity.HIGH, 0.7),
-    (re.compile(r"(?i)subprocess\.run\s*\(.*shell\s*=\s*True"), "subprocess with shell=True", Severity.HIGH, 0.75),
-    (re.compile(r"(?i)os\.system\s*\("), "Use of os.system()", Severity.HIGH, 0.75),
-    (re.compile(r"(?i)sql.*%.*s"), "Potential SQL injection (string formatting)", Severity.HIGH, 0.6),
-    (re.compile(r"(?i)cursor\.execute\s*\(.*%"), "Potential SQL injection (cursor.execute)", Severity.HIGH, 0.65),
 
-    # JavaScript/TypeScript
-    (re.compile(r"(?i)process\.env\.NODE_ENV\s*!==\s*['\"]production['\"]"), "Debug mode check", Severity.MEDIUM, 0.6),
-    (re.compile(r"(?i)console\.log"), "Console.log in production code", Severity.LOW, 0.4),
-    (re.compile(r"eval\s*\("), "Use of eval()", Severity.HIGH, 0.8),
-    (re.compile(r"Function\s*\("), "Use of Function constructor", Severity.HIGH, 0.75),
-    (re.compile(r"innerHTML\s*="), "innerHTML assignment (XSS risk)", Severity.MEDIUM, 0.6),
-    (re.compile(r"dangerouslySetInnerHTML"), "React dangerouslySetInnerHTML", Severity.MEDIUM, 0.7),
+def is_test_file(path: str) -> bool:
+    """Return True if the file is a test/spec file."""
+    p = Path(path)
+    name = p.name
+    parts = p.parts
+    return (
+        name.startswith("test_")
+        or name.endswith("_test.py")
+        or name.endswith(".test.js")
+        or name.endswith(".test.ts")
+        or name.endswith(".spec.js")
+        or name.endswith(".spec.ts")
+        or name.endswith(".test.jsx")
+        or name.endswith(".test.tsx")
+        or "tests" in parts
+        or "test" in parts
+        or "spec" in parts
+        or "__tests__" in parts
+    )
 
-    # Generic
-    (re.compile(r"(?i)TODO.*secret|FIXME.*secret|XXX.*secret"), "Secret in TODO/FIXME comment", Severity.MEDIUM, 0.5),
+
+def is_placeholder(value: str) -> bool:
+    """Return True if the extracted secret value looks like a placeholder."""
+    stripped = value.strip().strip("'\"")
+    return bool(_PLACEHOLDER_PATTERNS.match(stripped))
+
+
+def is_comment_only(line: str, language: Optional[str]) -> bool:
+    """Return True if the stripped line is purely a comment or empty."""
+    stripped = line.strip()
+    if not stripped:
+        return True
+    prefixes = _COMMENT_PREFIXES.get(language, ())
+    return any(stripped.startswith(p) for p in prefixes)
+
+
+def _should_skip_file(file: IndexedFile) -> bool:
+    return is_lockfile(file.path) or is_test_file(file.path)
+
+
+# ---------------------------------------------------------------------------
+# Secret masking
+# ---------------------------------------------------------------------------
+
+# Patterns that rewrite the sensitive part of an evidence line
+_MASK_SUBS: list[tuple[re.Pattern[str], str]] = [
+    # named credentials: key/token/password = 'VALUE'
+    (re.compile(
+        r"(?i)(api[_\-]?key|secret[_\-]?key?|access[_\-]?key|auth[_\-]?token|"
+        r"bearer|password|passwd|pwd|private[_\-]?key|token)\s*[=:]\s*['\"]([^'\"]{4,})['\"]"
+    ), r"\1=***MASKED***"),
+    # AWS IDs
+    (re.compile(r"\b(AKIA[A-Z0-9]{16})\b"), "AKIA***"),
+    # Base64-ish high-entropy strings ≥32 chars
+    (re.compile(r"['\"][A-Za-z0-9+/]{32,}={0,2}['\"]"), "'***MASKED***'"),
+    # PEM blocks
+    (re.compile(
+        r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*?-----END (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+        re.DOTALL,
+    ), "***PRIVATE KEY BLOCK***"),
+    # DB DSN passwords  postgresql://user:PASS@host
+    (re.compile(r"((?:postgresql|mysql|mongodb|redis|amqp)://[^:]+:)([^@\s'\"]{3,})(@)"), r"\1***\3"),
+    # Bearer tokens
+    (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_.+/=]+"), r"\1***MASKED***"),
 ]
 
 
 def mask_secrets(text: str) -> str:
-    """Mask potential secrets in evidence text."""
-    # Mask API keys, tokens, passwords
-    text = re.sub(r"(?i)(api[_-]?key|secret|token|password|key)\s*[=:]\s*['\"][^'\"]+['\"]", r"\1=***MASKED***", text)
-    text = re.sub(r"['\"][a-zA-Z0-9+/]{32,}={0,2}['\"]", "'***MASKED***'", text)
-    text = re.sub(r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*?-----END (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----", "***PRIVATE KEY***", text, flags=re.DOTALL)
+    """Mask secret values in a line of evidence. Non-secret text is preserved."""
+    for pattern, replacement in _MASK_SUBS:
+        text = pattern.sub(replacement, text)
     return text
 
 
-def check_secrets(file: IndexedFile, findings: list[Finding], finding_id_counter: list[int]) -> None:
-    """Check for hardcoded secrets in a file."""
-    content = file.content
-    lines = content.splitlines()
+# ---------------------------------------------------------------------------
+# Individual rule checkers
+# ---------------------------------------------------------------------------
 
-    for pattern, secret_type in SECRET_PATTERNS:
-        for match in pattern.finditer(content):
-            # Find line number
-            line_no = content[:match.start()].count('\n') + 1
-            evidence = lines[line_no - 1].strip() if line_no <= len(lines) else match.group()
-            evidence = mask_secrets(evidence)
-
-            finding_id_counter[0] += 1
-            findings.append(Finding(
-                id=f"SEC-{finding_id_counter[0]:04d}",
-                category=Category.SECURITY,
-                severity=Severity.CRITICAL,
-                confidence=0.85,
-                file=file.path,
-                line=line_no,
-                title=f"Hardcoded {secret_type}",
-                evidence=evidence,
-                suggested_fix=f"Move {secret_type.lower()} to environment variable or secret manager",
-            ))
+def _lineno(content: str, match_start: int) -> int:
+    return content[:match_start].count("\n") + 1
 
 
-def check_insecure_defaults(file: IndexedFile, findings: list[Finding], finding_id_counter: list[int]) -> None:
-    """Check for insecure default configurations."""
-    content = file.content
-    lines = content.splitlines()
-
-    for pattern, title, severity, confidence in INSECURE_PATTERNS:
-        for match in pattern.finditer(content):
-            line_no = content[:match.start()].count('\n') + 1
-            evidence = lines[line_no - 1].strip() if line_no <= len(lines) else match.group()
-            evidence = mask_secrets(evidence)
-
-            # Skip if it's in a test file or comment-only line
-            if is_test_file(file.path) or is_comment_only(evidence, file.language):
-                continue
-
-            finding_id_counter[0] += 1
-            findings.append(Finding(
-                id=f"SEC-{finding_id_counter[0]:04d}",
-                category=Category.SECURITY,
-                severity=severity,
-                confidence=confidence,
-                file=file.path,
-                line=line_no,
-                title=title,
-                evidence=evidence,
-                suggested_fix=get_security_fix_suggestion(title, file.language),
-            ))
+def _evidence(lines: list[str], lineno: int) -> str:
+    if 1 <= lineno <= len(lines):
+        return mask_secrets(lines[lineno - 1].strip())
+    return ""
 
 
-def check_python_ast(file: IndexedFile, findings: list[Finding], finding_id_counter: list[int]) -> None:
-    """AST-based checks for Python files."""
-    if file.language != "python":
-        return
-
-    try:
-        tree = ast.parse(file.content)
-    except SyntaxError:
-        return
-
-    for node in ast.walk(tree):
-        # Check for pickle usage
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Attribute):
-                if node.func.attr in ("loads", "load") and isinstance(node.func.value, ast.Name):
-                    if node.func.value.id == "pickle":
-                        finding_id_counter[0] += 1
-                        findings.append(Finding(
-                            id=f"SEC-{finding_id_counter[0]:04d}",
-                            category=Category.SECURITY,
-                            severity=Severity.CRITICAL,
-                            confidence=0.9,
-                            file=file.path,
-                            line=node.lineno,
-                            title="Unsafe pickle deserialization",
-                            evidence=mask_secrets(ast.get_source_segment(file.content, node) or ""),
-                            suggested_fix="Use json or a safe serialization format instead of pickle",
-                        ))
-
-            # Check for yaml.load without SafeLoader
-            if isinstance(node.func, ast.Attribute):
-                if node.func.attr == "load" and isinstance(node.func.value, ast.Name):
-                    if node.func.value.id == "yaml":
-                        # Check if SafeLoader is used
-                        has_safe_loader = any(
-                            kw.arg == "Loader" and isinstance(kw.value, ast.Name) and kw.value.id == "SafeLoader"
-                            for kw in node.keywords
-                        )
-                        if not has_safe_loader:
-                            finding_id_counter[0] += 1
-                            findings.append(Finding(
-                                id=f"SEC-{finding_id_counter[0]:04d}",
-                                category=Category.SECURITY,
-                                severity=Severity.HIGH,
-                                confidence=0.8,
-                                file=file.path,
-                                line=node.lineno,
-                                title="Unsafe YAML load (no SafeLoader)",
-                                evidence=mask_secrets(ast.get_source_segment(file.content, node) or ""),
-                                suggested_fix="Use yaml.safe_load() or yaml.load(..., Loader=yaml.SafeLoader)",
-                            ))
-
-        # Check for eval/exec calls
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in ("eval", "exec"):
-                finding_id_counter[0] += 1
-                findings.append(Finding(
-                    id=f"SEC-{finding_id_counter[0]:04d}",
-                    category=Category.SECURITY,
-                    severity=Severity.HIGH,
-                    confidence=0.85,
-                    file=file.path,
-                    line=node.lineno,
-                    title=f"Use of {node.func.id}()",
-                    evidence=mask_secrets(ast.get_source_segment(file.content, node) or ""),
-                    suggested_fix=f"Avoid {node.func.id}(); use safer alternatives",
-                ))
-
-
-def is_test_file(filepath: str) -> bool:
-    """Check if a file is a test file."""
-    name = Path(filepath).name
-    return (
-        name.startswith("test_") or
-        name.endswith("_test.py") or
-        name.endswith(".test.js") or
-        name.endswith(".test.ts") or
-        name.endswith(".spec.js") or
-        name.endswith(".spec.ts") or
-        "test" in Path(filepath).parts or
-        "spec" in Path(filepath).parts
+def _make(
+    counter: list[int],
+    *,
+    title: str,
+    severity: Severity,
+    confidence: float,
+    file: IndexedFile,
+    lineno: int,
+    evidence: str,
+    fix: str,
+) -> Finding:
+    counter[0] += 1
+    return Finding(
+        id=f"SEC-{counter[0]:04d}",
+        category=Category.SECURITY,
+        severity=severity,
+        confidence=confidence,
+        file=file.path,
+        line=lineno,
+        title=title,
+        evidence=evidence,
+        suggested_fix=fix,
     )
 
 
-def is_comment_only(line: str, language: Optional[str]) -> bool:
-    """Check if a line is only a comment."""
-    stripped = line.strip()
-    if not stripped:
-        return True
-
-    if language == "python":
-        return stripped.startswith("#")
-    elif language in ("javascript", "typescript", "go", "rust", "java", "csharp", "cpp", "c"):
-        return stripped.startswith("//") or stripped.startswith("/*")
-    elif language in ("ruby", "perl", "bash", "powershell"):
-        return stripped.startswith("#")
-    elif language in ("html", "xml"):
-        return stripped.startswith("<!--")
-    return False
+# ── AWS-001: AWS Access Key ID ──────────────────────────────────────────────
+# Format: AKIA[A-Z0-9]{16}  (20 chars total)
+_AWS_KEY_ID = re.compile(
+    r"""(?i)aws[_\-]?access[_\-]?key[_\-]?id\s*[=:]\s*['"]?(AKIA[A-Z0-9]{16})['"]?"""
+    r"""|(?<![A-Z0-9])(AKIA[A-Z0-9]{16})(?![A-Z0-9])""",
+    re.VERBOSE,
+)
 
 
-def get_security_fix_suggestion(title: str, language: Optional[str]) -> str:
-    """Get a suggested fix for a security issue."""
-    fixes = {
-        "DEBUG=True in production": "Set DEBUG=False in production; use environment variable",
-        "SSL verify=False": "Enable SSL verification; use proper certificates",
-        "SSL check_hostname=False": "Enable hostname verification",
-        "SSL verify disabled": "Enable SSL verification",
-        "Binding to 0.0.0.0 (all interfaces)": "Bind to specific interface (e.g., 127.0.0.1) or use env var",
-        "CORS allows all origins (*)": "Restrict CORS to specific trusted origins",
-        "CORS allow_origin=*": "Set allow_origin to specific domains",
-        "Weak hash algorithm (MD5/SHA1)": "Use SHA-256 or stronger (bcrypt/scrypt/argon2 for passwords)",
-        "Unsafe pickle deserialization": "Use json or a safe serialization format",
-        "Unsafe YAML load (no SafeLoader)": "Use yaml.safe_load() or yaml.load(..., Loader=yaml.SafeLoader)",
-        "Use of eval()": "Avoid eval(); use ast.literal_eval() or safer alternatives",
-        "Use of exec()": "Avoid exec(); refactor to use safer patterns",
-        "subprocess with shell=True": "Use shell=False and pass args as list",
-        "Use of os.system()": "Use subprocess.run() with shell=False",
-        "Potential SQL injection (string formatting)": "Use parameterized queries",
-        "Potential SQL injection (cursor.execute)": "Use parameterized queries with placeholders",
-        "Debug mode check": "Remove or guard debug code",
-        "Console.log in production code": "Remove console.log or use proper logging",
-        "Use of eval()": "Avoid eval(); use JSON.parse() or safer alternatives",
-        "Use of Function constructor": "Avoid Function constructor; use safer patterns",
-        "innerHTML assignment (XSS risk)": "Use textContent or safe DOM APIs",
-        "React dangerouslySetInnerHTML": "Sanitize content before using dangerouslySetInnerHTML",
-        "Secret in TODO/FIXME comment": "Remove secret from comment; use proper secret management",
-    }
-    return fixes.get(title, "Review and fix the security issue")
+def _check_aws_key_id(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen_lines: set[int] = set()
+    for m in _AWS_KEY_ID.finditer(file.content):
+        key_val = m.group(1) or m.group(2)
+        if is_placeholder(key_val):
+            continue
+        ln = _lineno(file.content, m.start())
+        if ln in seen_lines:
+            continue
+        seen_lines.add(ln)
+        findings.append(_make(
+            counter,
+            title="AWS Access Key ID",
+            severity=Severity.CRITICAL,
+            confidence=0.95,
+            file=file,
+            lineno=ln,
+            evidence=_evidence(lines, ln),
+            fix="Remove AWS credential from source; use IAM roles or environment variables.",
+        ))
+    return findings
+
+
+# ── AWS-002: AWS Secret Access Key ─────────────────────────────────────────
+_AWS_SECRET = re.compile(
+    r"""(?i)aws[_\-]?secret[_\-]?access[_\-]?key\s*[=:]\s*['"]?([A-Za-z0-9/+=]{40})['"]?"""
+)
+
+
+def _check_aws_secret(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+    for m in _AWS_SECRET.finditer(file.content):
+        val = m.group(1)
+        if is_placeholder(val):
+            continue
+        ln = _lineno(file.content, m.start())
+        if ln in seen:
+            continue
+        seen.add(ln)
+        findings.append(_make(
+            counter,
+            title="AWS Secret Access Key",
+            severity=Severity.CRITICAL,
+            confidence=0.95,
+            file=file,
+            lineno=ln,
+            evidence=_evidence(lines, ln),
+            fix="Remove AWS secret key from source; use IAM roles or environment variables.",
+        ))
+    return findings
+
+
+# ── KEY-001: PEM private key block ─────────────────────────────────────────
+_PEM_BLOCK = re.compile(
+    r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+)
+
+
+def _check_pem_block(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+    for m in _PEM_BLOCK.finditer(file.content):
+        ln = _lineno(file.content, m.start())
+        if ln in seen:
+            continue
+        seen.add(ln)
+        findings.append(_make(
+            counter,
+            title="Private Key Block (PEM)",
+            severity=Severity.CRITICAL,
+            confidence=0.99,
+            file=file,
+            lineno=ln,
+            evidence="-----BEGIN ***PRIVATE KEY*** (content masked)",
+            fix="Remove private key from repository; store in a secrets manager or vault.",
+        ))
+    return findings
+
+
+# ── KEY-002: Generic hardcoded API / secret key ────────────────────────────
+# Pattern: (api_key|secret_key|…) = 'VALUE'  where VALUE is ≥16 chars and
+# not an env-var read (os.getenv / process.env / os.environ)
+_GENERIC_KEY = re.compile(
+    r"""(?i)(?:api[_\-]?key|secret[_\-]?key|private[_\-]?key|"""
+    r"""auth[_\-]?token|access[_\-]?token|app[_\-]?secret|"""
+    r"""client[_\-]?secret|signing[_\-]?key|encryption[_\-]?key)"""
+    r"""\s*[=:]\s*['"]([^'"]{16,})['"]"""
+)
+
+
+def _check_generic_key(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+    for m in _GENERIC_KEY.finditer(file.content):
+        val = m.group(1)
+        if is_placeholder(val):
+            continue
+        ln = _lineno(file.content, m.start())
+        if ln in seen:
+            continue
+        seen.add(ln)
+        # Suppress if the value looks like it's reading an env var
+        line_text = lines[ln - 1] if ln <= len(lines) else ""
+        if re.search(r"os\.getenv|os\.environ|process\.env|import\.meta\.env|System\.getenv", line_text):
+            continue
+        findings.append(_make(
+            counter,
+            title="Hardcoded API / Secret Key",
+            severity=Severity.CRITICAL,
+            confidence=0.80,
+            file=file,
+            lineno=ln,
+            evidence=_evidence(lines, ln),
+            fix="Move secret to an environment variable or secrets manager.",
+        ))
+    return findings
+
+
+# ── KEY-003: Bearer token (hardcoded JWT or long opaque token) ──────────────
+# JWT: three base64url segments separated by dots
+_BEARER_TOKEN = re.compile(
+    r"""(?i)['\"]?\s*Bearer\s+([A-Za-z0-9\-_=]{3,}\.[A-Za-z0-9\-_=]{3,}\.[A-Za-z0-9\-_.+/=]{3,})['\"]?"""
+)
+# Or: Authorization header value with long opaque token
+_AUTH_HEADER = re.compile(
+    r"""(?i)(authorization|x\-api\-key)\s*[=:]\s*['"]([A-Za-z0-9\-_.+/=]{32,})['"]"""
+)
+
+
+def _check_bearer_token(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+
+    for m in _BEARER_TOKEN.finditer(file.content):
+        val = m.group(1)
+        if is_placeholder(val):
+            continue
+        ln = _lineno(file.content, m.start())
+        if ln in seen:
+            continue
+        seen.add(ln)
+        findings.append(_make(
+            counter,
+            title="Hardcoded Bearer / JWT Token",
+            severity=Severity.CRITICAL,
+            confidence=0.80,
+            file=file,
+            lineno=ln,
+            evidence=_evidence(lines, ln),
+            fix="Remove hardcoded token; pass via environment variable or secure vault.",
+        ))
+
+    for m in _AUTH_HEADER.finditer(file.content):
+        val = m.group(2)
+        if is_placeholder(val):
+            continue
+        ln = _lineno(file.content, m.start())
+        if ln in seen:
+            continue
+        seen.add(ln)
+        findings.append(_make(
+            counter,
+            title="Hardcoded Authorization Header",
+            severity=Severity.CRITICAL,
+            confidence=0.80,
+            file=file,
+            lineno=ln,
+            evidence=_evidence(lines, ln),
+            fix="Remove hardcoded credential; use environment variable.",
+        ))
+
+    return findings
+
+
+# ── DSN-001: DB connection string with embedded password ───────────────────
+# postgresql://user:PASS@host  mysql://  mongodb://  redis://:PASS@
+_DSN = re.compile(
+    r"""(?i)(postgresql|postgres|mysql|mariadb|mongodb|redis|amqp|mssql|sqlserver)"""
+    r"""://([^:@\s'"]{1,64}):([^@\s'"]{3,})@"""
+)
+
+
+def _check_dsn(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+    for m in _DSN.finditer(file.content):
+        password = m.group(3)
+        if is_placeholder(password) or password == "":
+            continue
+        ln = _lineno(file.content, m.start())
+        if ln in seen:
+            continue
+        seen.add(ln)
+        findings.append(_make(
+            counter,
+            title="DB Connection String with Embedded Password",
+            severity=Severity.CRITICAL,
+            confidence=0.90,
+            file=file,
+            lineno=ln,
+            evidence=_evidence(lines, ln),
+            fix="Move database credentials to environment variables; use a secrets manager for production.",
+        ))
+    return findings
+
+
+# ── INS-001: DEBUG=True ─────────────────────────────────────────────────────
+_DEBUG_TRUE = re.compile(
+    r"""(?i)(?:^|[\s;,])(?:app\.)?debug\s*=\s*True(?:\s|$|[,;)])""",
+    re.MULTILINE,
+)
+
+
+def _check_debug_true(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+    for m in _DEBUG_TRUE.finditer(file.content):
+        ln = _lineno(file.content, m.start())
+        raw_line = lines[ln - 1] if ln <= len(lines) else ""
+        if is_comment_only(raw_line, file.language):
+            continue
+        if ln in seen:
+            continue
+        seen.add(ln)
+        findings.append(_make(
+            counter,
+            title="DEBUG=True in production code",
+            severity=Severity.HIGH,
+            confidence=0.90,
+            file=file,
+            lineno=ln,
+            evidence=mask_secrets(raw_line.strip()),
+            fix="Set DEBUG=False for production; control via environment variable.",
+        ))
+    return findings
+
+
+# ── INS-002: CORS wildcard ──────────────────────────────────────────────────
+# Match: origins="*" / allow_origins=["*"] / CORS_ALLOW_ALL_ORIGINS=True /
+#        Access-Control-Allow-Origin: *
+_CORS_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"""(?i)origins\s*[=:]\s*['"]\*['"]"""),
+    re.compile(r"""(?i)origins\s*=\s*\[\s*['"]\*['"]\s*\]"""),
+    re.compile(r"""(?i)allow_origins\s*=\s*\[\s*['"]\*['"]\s*\]"""),
+    re.compile(r"""(?i)CORS_ALLOW_ALL_ORIGINS\s*=\s*True"""),
+    re.compile(r"""(?i)CORS_ORIGIN_ALLOW_ALL\s*=\s*True"""),
+    re.compile(r"""(?i)Access-Control-Allow-Origin['"]\s*[=:]\s*['"]\*['"]"""),
+    re.compile(r"""(?i)['"]\s*Access-Control-Allow-Origin\s*['"]\s*[,)]\s*['"]\*['"]"""),
+    re.compile(r"""(?i)Access-Control-Allow-Origin['"]\s*\]?\s*=\s*['"]\*['"]""")
+]
+
+
+def _check_cors_wildcard(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+    for pat in _CORS_PATTERNS:
+        for m in pat.finditer(file.content):
+            ln = _lineno(file.content, m.start())
+            raw = lines[ln - 1] if ln <= len(lines) else ""
+            if is_comment_only(raw, file.language):
+                continue
+            if ln in seen:
+                continue
+            seen.add(ln)
+            findings.append(_make(
+                counter,
+                title="CORS Wildcard (*) — all origins allowed",
+                severity=Severity.HIGH,
+                confidence=0.85,
+                file=file,
+                lineno=ln,
+                evidence=mask_secrets(raw.strip()),
+                fix="Restrict CORS to specific trusted origins; never use '*' in production.",
+            ))
+    return findings
+
+
+# ── INS-003: verify=False ───────────────────────────────────────────────────
+# Match verify=False but NOT verify=True, verify='/path', verify=cert_var
+_VERIFY_FALSE = re.compile(r"""(?i)\bverify\s*=\s*False\b""")
+
+
+def _check_verify_false(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+    for m in _VERIFY_FALSE.finditer(file.content):
+        ln = _lineno(file.content, m.start())
+        raw = lines[ln - 1] if ln <= len(lines) else ""
+        if is_comment_only(raw, file.language):
+            continue
+        if ln in seen:
+            continue
+        seen.add(ln)
+        findings.append(_make(
+            counter,
+            title="SSL Certificate Verification Disabled (verify=False)",
+            severity=Severity.HIGH,
+            confidence=0.90,
+            file=file,
+            lineno=ln,
+            evidence=mask_secrets(raw.strip()),
+            fix="Enable SSL verification; install proper CA certificates instead of disabling checks.",
+        ))
+    return findings
+
+
+# ── INS-004: md5/sha1 in password context ──────────────────────────────────
+# Only flag when the same line contains a password-related term
+_WEAK_HASH_ALG = re.compile(r"""\b(md5|sha1|sha_1)\b""", re.IGNORECASE)
+_PASSWORD_CTX  = re.compile(r"""(?:password|passwd|pwd|pass|secret|credential|hash|crypt)""", re.IGNORECASE)
+
+
+def _check_weak_hash(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+    for m in _WEAK_HASH_ALG.finditer(file.content):
+        ln = _lineno(file.content, m.start())
+        raw = lines[ln - 1] if ln <= len(lines) else ""
+        # Only flag if the line also mentions a password-related word
+        if not _PASSWORD_CTX.search(raw):
+            continue
+        if is_comment_only(raw, file.language):
+            continue
+        if ln in seen:
+            continue
+        seen.add(ln)
+        alg = m.group(1).upper()
+        findings.append(_make(
+            counter,
+            title=f"Weak Hash Algorithm ({alg}) for Password/Secret",
+            severity=Severity.MEDIUM,
+            confidence=0.75,
+            file=file,
+            lineno=ln,
+            evidence=mask_secrets(raw.strip()),
+            fix=f"Replace {alg} with bcrypt, scrypt, or argon2id for passwords; "
+                "use SHA-256+ for non-password hashing.",
+        ))
+    return findings
+
+
+# ── INS-005: Bind to 0.0.0.0 ───────────────────────────────────────────────
+_BIND_ALL = re.compile(r"""(?<!['\"])0\.0\.0\.0(?!['\"]?\s*#)""")
+# More targeted: only flag when it's inside a string or assignment
+_BIND_ALL_STR = re.compile(r"""['"](0\.0\.0\.0)['"]""")
+
+
+def _check_bind_0000(file: IndexedFile, counter: list[int]) -> list[Finding]:
+    lines = file.content.splitlines()
+    findings: list[Finding] = []
+    seen: set[int] = set()
+    for m in _BIND_ALL_STR.finditer(file.content):
+        ln = _lineno(file.content, m.start())
+        raw = lines[ln - 1] if ln <= len(lines) else ""
+        if is_comment_only(raw, file.language):
+            continue
+        if ln in seen:
+            continue
+        seen.add(ln)
+        findings.append(_make(
+            counter,
+            title="Binding to 0.0.0.0 (all interfaces)",
+            severity=Severity.MEDIUM,
+            confidence=0.70,
+            file=file,
+            lineno=ln,
+            evidence=mask_secrets(raw.strip()),
+            fix="Bind to a specific interface (127.0.0.1) in production; "
+                "control host via environment variable.",
+        ))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+#: Ordered list of checker functions; each takes (file, counter) → list[Finding]
+_CHECKERS = [
+    _check_aws_key_id,
+    _check_aws_secret,
+    _check_pem_block,
+    _check_generic_key,
+    _check_bearer_token,
+    _check_dsn,
+    _check_debug_true,
+    _check_cors_wildcard,
+    _check_verify_false,
+    _check_weak_hash,
+    _check_bind_0000,
+]
 
 
 def audit_security(source_files: list[IndexedFile]) -> list[Finding]:
-    """Main entry point for security auditor."""
-    findings = []
-    finding_id_counter = [0]
+    """Run all security checks over source_files.
+
+    Skips lockfiles and test files automatically.
+    Returns findings in file-order (not yet triaged).
+    """
+    findings: list[Finding] = []
+    counter: list[int] = [0]
 
     for file in source_files:
-        check_secrets(file, findings, finding_id_counter)
-        check_insecure_defaults(file, findings, finding_id_counter)
-        check_python_ast(file, findings, finding_id_counter)
+        if _should_skip_file(file):
+            continue
+        for checker in _CHECKERS:
+            try:
+                findings.extend(checker(file, counter))
+            except Exception:  # never let one checker crash the whole audit
+                pass
 
     return findings

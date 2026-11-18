@@ -73,6 +73,19 @@ class TestAuditCommand:
         assert len(drift_items) >= 1
         assert any("SECRET_UNLISTED_TOKEN" in d["title"] for d in drift_items)
 
+    def test_audit_detects_slop_via_cli(self, tmp_path):
+        make_repo(tmp_path)
+        # Add an unused dependency to requirements.txt and an orphaned file
+        (tmp_path / "requirements.txt").write_text("unused-mock-package==1.0.0\n")
+        (tmp_path / "src" / "dead_module.py").write_text("def abandoned(): pass\n")
+        runner = CliRunner(mix_stderr=False)
+        result = runner.invoke(cli, ["audit", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        slop_items = [d for d in data if d["category"] == "slop"]
+        assert len(slop_items) >= 1
+        assert any("unused-mock-package" in d["title"] or "dead_module.py" in d["file"] for d in slop_items)
+
     def test_audit_nonexistent_path_exits_nonzero(self, tmp_path):
         runner = CliRunner()
         result = runner.invoke(cli, ["audit", str(tmp_path / "does_not_exist")])

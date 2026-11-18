@@ -347,3 +347,63 @@ any git commands. Stop and summarize."
 orphaned files and unused manifest dependencies) with tests first, followed by Phase 6
 (`sandbox.py` shadow worktree verification gate).
 
+---
+
+## Entry 8 — Phase 5: slop auditor (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Gemini 3.8 Flash |
+| **Phase** | Phase 5 — Slop auditor (orphaned files & unused dependencies) |
+
+**Goal:** Implement `contractguard/auditors/slop.py` covering:
+- Orphaned file detection via an import graph (Python AST, JS/TS regex).
+- Entry point whitelisting (`__main__`, `main`, `app`, `index`, `cli`, `setup`, config files, test files, and files referenced in `package.json` scripts or `pyproject.toml` entry points).
+- Unused dependencies: comparing `requirements.txt` and `package.json` against actual imports, with mapping for common name mismatches (`pyyaml->yaml`, `scikit-learn->sklearn`, `pillow->PIL`, etc.).
+- Lower confidence (0.60 vs 0.85/0.80) when dynamic imports (`importlib`, `__import__`, dynamic `require`/`import`) are present.
+- Register in CLI, run pytest, append AI_LOG.md entry. No git commands.
+
+**Prompt summary:** "Phase 5. Follow CLAUDE.md and ARCHITECTURE.md. Tests first, then
+auditors/slop.py. - Orphan files via an import graph (ast for Python, regex for JS/TS).
+- Whitelist entry points: __main__, main, app, index, cli, setup, config files, tests,
+and anything referenced in package.json scripts or pyproject entry points. - Unused
+dependencies: compare requirements.txt and package.json to imports, with a mapping for
+common name mismatches (pyyaml->yaml, scikit-learn->sklearn, pillow->PIL). - Lower
+confidence where dynamic imports make results uncertain. Register in the CLI. Run pytest.
+Append a phase entry to AI_LOG.md. Do not run any git commands. Stop and summarize."
+
+**Rules implemented (deterministic, offline, no API key):**
+
+| ID | Rule / Pattern | Severity | Confidence |
+|----|----------------|----------|------------|
+| SLP-001 | Orphaned source file never imported anywhere and not a whitelisted entry point | LOW | 0.85 (0.60 if dynamic imports) |
+| SLP-002 | Dependency declared in manifest (`requirements.txt` / `package.json`) but never imported | LOW | 0.80 (0.60 if dynamic imports) |
+
+**Features implemented:**
+- Python import graph: AST-based visitor for `ast.Import` and `ast.ImportFrom` (handling absolute, dotted submodule, and relative `.` / `..` imports).
+- JS/TS import graph: regex matching `import ... from '...'`, `export ... from '...'`, and `require('...')`, resolving relative file paths across extensions (`.js`, `.ts`, `.jsx`, `.tsx`, `/index.js`, etc.).
+- Dynamic import detection: detects `importlib.import_module`, `__import__`, variable `require(var)`, and dynamic `import(...)` expressions.
+- Whitelist protection:
+  - Default entry points: `main`, `__main__`, `__init__`, `app`, `index`, `cli`, `setup`, `manage`, `wsgi`, `asgi`, `conftest`, `server`, `run`, `worker`.
+  - Directories: `tests`, `test`, `__tests__`, `spec`, `scripts`, `bin`.
+  - Prefix/suffix patterns: `test_*`, `*_test`, `*.config.*`, `*.test.*`, `*.spec.*`.
+  - Manifest-derived entry points: extracts `main`, `module`, `bin`, and script commands from `package.json`, plus CLI scripts from `pyproject.toml`.
+- Dependency mismatch mappings: covers `pyyaml -> yaml`, `scikit-learn -> sklearn`, `pillow -> PIL`, `beautifulsoup4 -> bs4`, `python-dateutil -> dateutil`, `pydantic-settings -> pydantic_settings`, `opencv-python -> cv2`, `protobuf -> google.protobuf`, `pyjwt -> jwt`, `python-dotenv -> dotenv`, `attrs -> attr`, etc., plus automatic `-` to `_` normalization.
+- CLI integration: verified registered in `AUDITOR_REGISTRY` under mode `"both"`.
+
+**Tests written (before implementation):**
+- `tests/test_slop.py` — 53 tests covering Python import graphs, JS/TS import graphs, dynamic imports, whitelisting, manifest extraction, orphan detection, requirements & package.json parsers, unused dependencies, mismatch mappings, and integration.
+- `tests/test_cli.py` — added `test_audit_detects_slop_via_cli` for end-to-end Click CLI verification.
+
+**Pytest run:**
+- 355/355 tests passed in 1.81s across the full suite (53 slop + 68 drift + 14 CLI + 90 security + 27 triage + 17 reporter + 58 indexer + 28 models). Zero failures.
+
+**Human corrections:** None.
+
+**Decision:** Phase 5 complete. All three auditors (`security`, `drift`, `slop`) are now
+fully implemented and registered. Next is Phase 6: `sandbox.py` (shadow git worktree
+verification gate with verifier detection and rollback) and Phase 7: `fixer.py` + `heal` CLI command.
+
+

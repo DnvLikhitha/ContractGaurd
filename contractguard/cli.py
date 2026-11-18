@@ -133,19 +133,24 @@ def audit(path: Path, output_json: bool, no_llm: bool) -> None:
               help="Disable LLM-assisted patch synthesis.")
 def heal(path: Path, branch: str, no_llm: bool) -> None:
     """Apply fixes in a shadow worktree, verify each, and promote to BRANCH."""
+    path = path.resolve()
     _console.print(f"[bold]ContractGuard heal[/bold] inspecting [cyan]{path}[/cyan] ...")
     contract_files, source_files = index_repo(path)
     raw = _run_auditors(source_files, contract_files, no_llm=no_llm)
     findings = triage_findings(raw)
 
+    receipt_path = path / "VERIFICATION_RECEIPT.md"
+
     if not findings:
         _console.print("[green]✔ No findings to heal.[/green]")
+        write_verification_receipt([], receipt_path)
         return
 
     _console.print(f"Generating fixes for [bold]{len(findings)}[/bold] finding(s)...")
     patches = generate_all_patches(findings, repo_path=path, use_llm=not no_llm)
     if not patches:
         _console.print("[yellow]No patches could be generated for the current findings.[/yellow]")
+        write_verification_receipt([], receipt_path)
         return
 
     _console.print(f"Applying and verifying [bold]{len(patches)}[/bold] patch(es) in sandbox...")
@@ -170,7 +175,6 @@ def heal(path: Path, branch: str, no_llm: bool) -> None:
 
         sb.promote_verified_patches(results)
 
-    receipt_path = path / "VERIFICATION_RECEIPT.md"
     write_verification_receipt(results, receipt_path)
     _console.print(f"[green]✔ Verification receipt written to [bold]{receipt_path}[/bold][/green]")
 

@@ -262,6 +262,8 @@ def index_repo(repo_path: Path) -> tuple[ContractFiles, list[IndexedFile]]:
                     contract_files.docker_compose.append(indexed)
                 elif contract_type == "github_actions":
                     contract_files.github_actions.append(indexed)
+                elif contract_type == "manifests":
+                    contract_files.manifests.append(indexed)
                 elif contract_type == "config_files":
                     contract_files.config_files.append(indexed)
                 elif contract_type == "openapi_specs":

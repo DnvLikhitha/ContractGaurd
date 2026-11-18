@@ -522,6 +522,52 @@ in this repo. Stop and summarize."
 Next is Phase 8: `sample-broken-app/` setup with planted defects for zero false-negative verification,
 followed by Phase 9: generating `SELF_VERIFICATION.md` and finalizing documentation.
 
+---
+
+## Entry 11 — Phase 8: heal end-to-end integration & verification receipt (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Gemini 3.8 Flash |
+| **Phase** | Phase 8 — End-to-end heal pipeline & receipt generation |
+
+**Goal:** Wire `heal <path> --branch contractguard/clean` end to end:
+- Complete workflow: audit -> generate fixes -> verify each in sandbox -> promote verified patches to target branch -> write `VERIFICATION_RECEIPT.md`.
+- Ensure `VERIFICATION_RECEIPT.md` includes each finding ID, status (`VERIFIED` or `ROLLED_BACK`), the verifier command, an output summary, and the verification strength (`TESTS_PASSED`, `SYNTAX_ONLY`, `NO_VERIFIER`).
+- Support `--no-llm` and `--branch <branch>` flags.
+- Integration test on a temporary git repository.
+- Run pytest and append to `AI_LOG.md`. No git commands on ContractGuard itself.
+
+**Prompt summary:** "Phase 8. Wire 'heal <path> --branch contractguard/clean' end to end:
+audit, generate fixes, verify each in the sandbox, promote verified patches to the branch,
+and write VERIFICATION_RECEIPT.md listing each finding, its status (VERIFIED or ROLLED_BACK),
+the verifier command, an output summary and the verification strength. Add --no-llm and an
+integration test with a tiny temporary repo. Run pytest. Append a phase entry to AI_LOG.md.
+Do not run any git commands in this repo. Stop and summarize."
+
+**Features implemented & bugs fixed:**
+- **Bug fixed in `contractguard/indexer.py`**: Integration testing revealed `contract_files.manifests` was omitted during classification dispatch in `index_repo()`, causing manifests (`requirements.txt`, `package.json`) to be placed in `.other`. Added `elif contract_type == "manifests": contract_files.manifests.append(indexed)`.
+- **`contractguard/reporter.py`**: Updated `write_verification_receipt()` to output the markdown table and detail section with:
+  - Finding ID
+  - Status (`VERIFIED` or `ROLLED_BACK`)
+  - Verifier command
+  - Output summary (compacted 1-line summary in table, full output block in detail section)
+  - Verification strength (`TESTS_PASSED`, `SYNTAX_ONLY`, `NO_VERIFIER`).
+- **`contractguard/cli.py`**: Enhanced `heal` command to handle absolute path normalization, execute auditors, generate patches with `--no-llm` support, run the sandbox verification gate, promote verified patches to `--branch`, and write `VERIFICATION_RECEIPT.md`.
+- **Integration tests (`tests/test_heal_integration.py`)**:
+  - `test_heal_end_to_end_pipeline`: tests audit -> deterministic fixes -> sandbox verifier (`pytest`) -> promotion to branch `contractguard/clean` -> `VERIFICATION_RECEIPT.md` format and contents -> test suite passing on the healed branch.
+  - `test_heal_non_git_repo_fallback`: tests plain directory heal fallback without git.
+
+**Pytest run:**
+- 412/412 tests passed across the entire project in 74.13s (2 heal integration + 36 fixer + 15 CLI + 18 sandbox + 53 slop + 68 drift + 90 security + 27 triage + 17 reporter + 58 indexer + 28 models). Zero failures.
+
+**Human corrections:** None.
+
+**Decision:** Phase 8 complete. All core features (auditors, triage, fixer, sandbox gate, reporter, CLI audit and heal) are fully implemented and verified end to end. Next steps: seed `sample-broken-app/` with planted issues to verify zero false negatives, run self-verification to produce `SELF_VERIFICATION.md`, and polish documentation.
+
+
 
 
 

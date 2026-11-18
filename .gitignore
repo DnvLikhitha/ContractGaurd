@@ -29,6 +29,8 @@ cg-shadow*/
 
 # ── Claude / agent tooling ────────────────────────────────────────────────────
 .claude/settings.local.json
+CLAUDE.md
+AGENTS.md
 
 # ── Editor and OS files ───────────────────────────────────────────────────────
 .vscode/
@@ -37,5 +39,5 @@ Thumbs.db
 .DS_Store
 
 # ── Intentionally tracked metadata ─────────────────────────────────────────────
-# CLAUDE.md  AGENTS.md  PRD.md  ARCHITECTURE.md  TECH_STACK.md
+# PRD.md  ARCHITECTURE.md  TECH_STACK.md
 # AI_LOG.md  arena.json  README.md  transcripts/

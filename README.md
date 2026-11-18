@@ -44,8 +44,8 @@ Requires Python 3.10+:
 
 ```bash
 # Clone the repository
-git clone https://github.com/TODO/contractguard.git
-cd contractguard
+git clone https://github.com/DnvLikhitha/ContractGaurd.git
+cd ContractGaurd
 
 # Install in editable mode
 pip install -e .

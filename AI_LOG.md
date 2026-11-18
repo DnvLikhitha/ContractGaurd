@@ -406,4 +406,64 @@ Append a phase entry to AI_LOG.md. Do not run any git commands. Stop and summari
 fully implemented and registered. Next is Phase 6: `sandbox.py` (shadow git worktree
 verification gate with verifier detection and rollback) and Phase 7: `fixer.py` + `heal` CLI command.
 
+---
+
+## Entry 9 — Phase 6: verification gate & sandbox (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Gemini 3.8 Flash |
+| **Phase** | Phase 6 — Verification gate & shadow git worktree sandbox |
+
+**Goal:** Implement `contractguard/sandbox.py` following ARCHITECTURE.md §4:
+- Isolated git worktree lifecycle: `git worktree add --detach <tmp>`, with fallback to a temp copy if the target is not a git repo or the working tree is dirty (`git status --porcelain`).
+- Baseline verifier execution prior to any patch.
+- Verifier detection hierarchy: `pytest` -> `npm test` -> `go test ./...` -> `cargo check` -> syntax fallback (`python -m compileall`, `node --check`) -> `NO_VERIFIER`.
+- Sequential patch application and gating: applied one by one; exit code 0 marks `VERIFIED`, failures are immediately reverted and marked `ROLLED_BACK`.
+- Strength recording: `TESTS_PASSED`, `SYNTAX_ONLY`, or `NO_VERIFIER`.
+- Promotion of verified fixes to branch `contractguard/clean`.
+- Rigorous cleanup in `try/finally` (with `git worktree remove --force` and robust Windows-safe temp dir removal).
+- Tests first using temporary git repo fixture in `tmp_path`, never running git commands on ContractGuard itself.
+
+**Prompt summary:** "Phase 6, the key differentiator. Follow the 'Verification gate'
+section of ARCHITECTURE.md exactly. Tests first, using a temporary git repo fixture.
+- Create a git worktree for the target; fall back to a temp copy if it is not a git repo or the tree is dirty.
+- Run a baseline verifier before any patch.
+- Apply patches one at a time and gate each: pass means VERIFIED, fail means revert and mark ROLLED_BACK.
+- Detect the verifier in order: pytest, npm test, go test ./..., cargo check, then syntax fallback (python -m compileall, node --check).
+- Record strength: TESTS_PASSED, SYNTAX_ONLY or NO_VERIFIER.
+- Always clean up in try/finally, even on exceptions.
+- Git commands against the TARGET repo are allowed here because they are the product. Never run git commands against this project's own repo.
+Tests must cover: passing patch, breaking patch rolled back, no verifier, baseline already failing, and cleanup after a crash.
+Run pytest. Append a phase entry to AI_LOG.md. Stop and summarize."
+
+**Features implemented:**
+- `VerifierDetector`: inspects target repository for test configurations, manifests, and sources in strict priority order (`pytest` using `sys.executable -m pytest -q`, `npm test`, `go test ./...`, `cargo check`, `compileall`, `node --check`, none).
+- `Sandbox` class:
+  - `setup()`: checks `_is_tree_dirty()`. Creates detached worktree if clean git repo; falls back cleanly to isolated temp copy otherwise.
+  - `run_baseline_verifier()`: runs detected verifier before any modification.
+  - `apply_patch()`: ensures search string matches exactly once (`count == 1`).
+  - `revert_patch()`: restores original content if verification fails.
+  - `verify_patch()`: gates each patch; marks `FixStatus.VERIFIED` or rolls back with `FixStatus.ROLLED_BACK`.
+  - `promote_verified_patches()`: checks out target branch (`contractguard/clean`), commits verified changes.
+  - `cleanup()`: guaranteed cleanup via context manager / `finally` block with error handlers for readonly git objects on Windows.
+
+**Tests written (before implementation):**
+- `tests/test_sandbox.py` — 18 tests covering:
+  - Verifier detection order and strength classification (8 tests)
+  - Worktree lifecycle, non-git fallback, dirty repo fallback, cleanups after crashes (5 tests)
+  - Passing patch verified, breaking patch rolled back, no verifier strength, baseline already failing (unresolved vs fixed), search string not found, and promotion to clean branch (5 tests).
+
+**Pytest run:**
+- 373/373 passed across the entire project in 54.67s (18 sandbox + 53 slop + 68 drift + 14 CLI + 90 security + 27 triage + 17 reporter + 58 indexer + 28 models). Zero failures.
+
+**Human corrections:** None.
+
+**Decision:** Phase 6 complete. The verification gate is fully implemented and tested.
+Next is Phase 7: `fixer.py` (deterministic fixers) + full wiring of the `heal` Click command
+in `cli.py` to connect indexer, auditors, triage, fixer, sandbox gate, and verification receipt reporter.
+
+
 

@@ -31,8 +31,10 @@ from rich.console import Console
 from contractguard.auditors.drift import audit_drift
 from contractguard.auditors.security import audit_security
 from contractguard.auditors.slop import audit_slop
+from contractguard.fixer import generate_all_patches
 from contractguard.indexer import index_repo
-from contractguard.reporter import findings_to_json, print_findings_table
+from contractguard.reporter import findings_to_json, print_findings_table, write_verification_receipt
+from contractguard.sandbox import Sandbox
 from contractguard.triage import triage_findings
 
 _console = Console(stderr=True)
@@ -120,7 +122,7 @@ def audit(path: Path, output_json: bool, no_llm: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# heal command (placeholder — Phase 3)
+# heal command
 # ---------------------------------------------------------------------------
 
 @cli.command()
@@ -130,14 +132,47 @@ def audit(path: Path, output_json: bool, no_llm: bool) -> None:
 @click.option("--no-llm", is_flag=True, default=False,
               help="Disable LLM-assisted patch synthesis.")
 def heal(path: Path, branch: str, no_llm: bool) -> None:
-    """Apply fixes in a shadow worktree, verify each, and promote to BRANCH.
+    """Apply fixes in a shadow worktree, verify each, and promote to BRANCH."""
+    _console.print(f"[bold]ContractGuard heal[/bold] inspecting [cyan]{path}[/cyan] ...")
+    contract_files, source_files = index_repo(path)
+    raw = _run_auditors(source_files, contract_files, no_llm=no_llm)
+    findings = triage_findings(raw)
 
-    [Phase 3 — not yet implemented]
-    """
-    _console.print(
-        "[yellow]⚠ 'heal' is not yet implemented (Phase 3).[/yellow]\n"
-        f"  Target: [cyan]{path}[/cyan]  Branch: [cyan]{branch}[/cyan]"
-    )
+    if not findings:
+        _console.print("[green]✔ No findings to heal.[/green]")
+        return
+
+    _console.print(f"Generating fixes for [bold]{len(findings)}[/bold] finding(s)...")
+    patches = generate_all_patches(findings, repo_path=path, use_llm=not no_llm)
+    if not patches:
+        _console.print("[yellow]No patches could be generated for the current findings.[/yellow]")
+        return
+
+    _console.print(f"Applying and verifying [bold]{len(patches)}[/bold] patch(es) in sandbox...")
+    results = []
+    with Sandbox(path, branch_name=branch) as sb:
+        passed, out, cmd, strength, verifier_name = sb.run_baseline_verifier()
+        _console.print(f"  Baseline verifier: [cyan]{verifier_name}[/cyan] (Strength: [bold]{strength}[/bold])")
+
+        for patch in patches:
+            res = sb.verify_patch(
+                patch,
+                baseline_passed=passed,
+                baseline_output=out,
+                verifier_command=cmd,
+                verifier_strength=strength,
+                verifier_name=verifier_name,
+            )
+            results.append(res)
+            status_val = getattr(res.status, "value", str(res.status))
+            status_color = "green" if status_val == "VERIFIED" else "red"
+            _console.print(f"  Patch for {patch.finding_id} ({patch.file}): [{status_color}]{status_val}[/{status_color}]")
+
+        sb.promote_verified_patches(results)
+
+    receipt_path = path / "VERIFICATION_RECEIPT.md"
+    write_verification_receipt(results, receipt_path)
+    _console.print(f"[green]✔ Verification receipt written to [bold]{receipt_path}[/bold][/green]")
 
 
 # ---------------------------------------------------------------------------

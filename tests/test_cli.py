@@ -125,8 +125,22 @@ class TestHealCommand:
         make_repo(tmp_path)
         runner = CliRunner()
         result = runner.invoke(cli, ["heal", str(tmp_path), "--branch", "contractguard/clean"])
-        # Placeholder - just must not crash with unknown option
         assert result.exit_code in (0, 1)
+
+    def test_heal_executes_verification_and_writes_receipt(self, tmp_path):
+        make_repo(tmp_path)
+        # Add an undocumented env var in app.py
+        (tmp_path / "src" / "app.py").write_text("import os\nval = os.getenv('NEW_HEAL_VAR')\n")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["heal", str(tmp_path), "--no-llm"])
+        assert result.exit_code == 0
+        receipt = tmp_path / "VERIFICATION_RECEIPT.md"
+        assert receipt.exists()
+        content = receipt.read_text(encoding="utf-8")
+        assert "VERIFICATION_RECEIPT" in content
+        # Check that .env.example was healed with the missing variable
+        env_ex = (tmp_path / ".env.example").read_text(encoding="utf-8")
+        assert "NEW_HEAL_VAR=" in env_ex
 
 
 # ---------------------------------------------------------------------------

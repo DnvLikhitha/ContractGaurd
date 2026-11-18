@@ -465,5 +465,63 @@ Run pytest. Append a phase entry to AI_LOG.md. Stop and summarize."
 Next is Phase 7: `fixer.py` (deterministic fixers) + full wiring of the `heal` Click command
 in `cli.py` to connect indexer, auditors, triage, fixer, sandbox gate, and verification receipt reporter.
 
+---
+
+## Entry 10 — Phase 7: fixer.py & heal command (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Gemini 3.8 Flash |
+| **Phase** | Phase 7 — Deterministic fixers, Groq LLM patches, and heal command |
+
+**Goal:** Implement `contractguard/fixer.py` covering:
+- Deterministic fixers:
+  1. Append missing environment variables to `.env.example`.
+  2. Remove confirmed unused dependencies from `requirements.txt` and `package.json`.
+  3. Remove confirmed orphan files, strictly refusing to delete protected paths (entry points, tests, manifests, configs).
+- Optional Groq LLM patch generator:
+  - Produces strict JSON search-and-replace hunks (`search`, `replace`, `description`).
+  - Validated with Pydantic `Patch`.
+  - Enforces the single-match rule (`content.count(search) == 1`); discards hunks if not matching exactly once.
+  - Fully functional with `--no-llm` or unset `GROQ_API_KEY`, gracefully handling API errors and invalid JSON.
+- Full wiring of the `heal` command in `contractguard/cli.py` connecting indexer, auditors, triage, fixer, sandbox gate, branch promotion, and `VERIFICATION_RECEIPT.md`.
+
+**Prompt summary:** "Phase 7. Follow CLAUDE.md and ARCHITECTURE.md. Tests first, then
+fixer.py. Deterministic fixers first: append missing env vars to .env.example, remove
+confirmed unused dependencies, remove confirmed orphan files (never protected paths).
+Then an optional Groq patch generator producing strict JSON search-and-replace hunks
+validated with pydantic; the search string must match exactly once or the hunk is discarded.
+It must work fully with --no-llm or no GROQ_API_KEY and handle API errors and invalid
+JSON gracefully. Run pytest. Append a phase entry to AI_LOG.md. Do not run any git commands
+in this repo. Stop and summarize."
+
+**Features implemented:**
+- `is_protected_path(path)`: checks entry points (`main.py`, `app.py`, `index.js`, etc.), configs (`pyproject.toml`, `package.json`, `conftest.py`, etc.), and test directories (`tests/`, `test/`, `__tests__/`).
+- `generate_env_example_fix`: extracts missing env var names from drift findings and safely appends `VAR=\n` to `.env.example`.
+- `generate_unused_dep_fix`: removes exact dependency lines from `requirements.txt` and `package.json`.
+- `generate_remove_orphan_file_fix`: generates deletion patches for confirmed orphan files while blocking any deletion of protected files.
+- `generate_llm_patch`: prompts Groq with `response_format={"type": "json_object"}`, validates Pydantic model, verifies `file_content.count(search) == 1`, and catches any network/JSON error.
+- `generate_all_patches`: runs deterministic fixes first, then invokes Groq for remaining findings if LLM is enabled.
+- `cli.py` `heal` command: fully wired end-to-end (`index_repo` -> `_run_auditors` -> `triage_findings` -> `generate_all_patches` -> `Sandbox` verification gate -> `promote_verified_patches` -> `write_verification_receipt`).
+
+**Tests written (before implementation):**
+- `tests/test_fixer.py` — 36 tests covering:
+  - Protected vs non-protected path classification (23 tests)
+  - Deterministic fixers: `.env.example` appending (empty and non-empty), `requirements.txt` removal, `package.json` removal, orphan file deletion, safety refusal on protected paths, and combined runner (7 tests)
+  - LLM patch generator: `--no-llm`/empty key check, valid JSON exact match, discard when count != 1, invalid JSON handling, API exception handling, and priority over LLM (6 tests).
+- `tests/test_cli.py` — added `test_heal_executes_verification_and_writes_receipt` validating the complete `heal` command execution, sandbox verification, and receipt generation.
+
+**Pytest run:**
+- 410/410 tests passed across the entire project in 56.24s (36 fixer + 15 CLI + 18 sandbox + 53 slop + 68 drift + 90 security + 27 triage + 17 reporter + 58 indexer + 28 models). Zero failures.
+
+**Human corrections:** None.
+
+**Decision:** Phase 7 complete. The audit and heal pipeline is now fully operational.
+Next is Phase 8: `sample-broken-app/` setup with planted defects for zero false-negative verification,
+followed by Phase 9: generating `SELF_VERIFICATION.md` and finalizing documentation.
+
+
 
 

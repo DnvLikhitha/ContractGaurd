@@ -619,6 +619,46 @@ entry to AI_LOG.md. Do not run any git commands in this repo. Stop and summarize
 
 **Decision:** Phase 9 complete. All seeded defects detected with zero false negatives, and rollback gate verified. Next: final deliverables (`SELF_VERIFICATION.md`, `arena.json`, `README.md` completion).
 
+---
+
+## Entry 13 — Phase 10: self-verification, documentation & final deliverables (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Gemini 3.8 Flash |
+| **Phase** | Phase 10 — Self-verification, documentation, and hackathon finalization |
+
+**Goal:**
+1. Run ContractGuard on its own repo and write `SELF_VERIFICATION.md` with the real output.
+2. Write the final `README.md` covering the problem, installation, usage, example output, verification gate mechanics, honest limitations, and an AI usage section pointing to `AI_LOG.md` and `transcripts/`.
+3. Finalize `arena.json` for submission.
+4. Tidy `AI_LOG.md` ensuring every phase (Phases 0 through 10) has a dedicated entry with tool and model used, preserving human corrections without inventing any.
+5. Run the full test suite and confirm `pip install -e .` works.
+6. Strictly avoid running any git commands in this repository.
+
+**Prompt summary:** "Phase 10. 1. Run ContractGuard on its own repo and write SELF_VERIFICATION.md with the real output. 2. Write the final README.md: problem, install, usage, example output, how the verification gate works, honest limitations, and a short "AI usage" section pointing to AI_LOG.md and transcripts/. 3. Finalize arena.json using this schema: [paste the schema from the arena site]. 4. Tidy AI_LOG.md: every phase has an entry with the tool and model used. Keep my recorded corrections. Do not invent corrections I did not make. 5. Run the full test suite and confirm 'pip install -e .' works. Do not run any git commands in this repo. Stop and summarize."
+
+**Outputs produced:**
+- `SELF_VERIFICATION.md`: documented the real output from `python -m contractguard audit .` (29 total findings: 1 Critical, 18 High, 2 Medium, 8 Low across security, drift, and slop), with an honest analysis explaining seeded broken-app findings, auditor metaprogramming pattern matches, uncontracted env reads (`GROQ_API_KEY`), and CLI dev dependencies (`pytest-cov`, `ruff`). Recorded verification strength `TESTS_PASSED`.
+- `README.md`: comprehensive documentation covering problem statement, solution, installation, CLI usage (`audit`, `heal`), Rich table and JSON examples, architectural deep-dive into the shadow worktree verification gate, honest limitations, and AI transparency.
+- `arena.json`: updated status to `complete` and recorded verification commands and metadata.
+- `pyproject.toml`: package discovery configured with `[tool.setuptools.packages.find]` to support flat-layout editable install alongside test and harness directories.
+- `pip install -e .`: confirmed working cleanly without errors.
+- `AI_LOG.md`: tidied with complete entries for all phases.
+
+**Human corrections:** User noted that requirements should be installed into `.venv`.
+
+**Actions taken:**
+1. Installed all dependencies from `requirements.txt` and `requirements-dev.txt` into `.venv`.
+2. Installed `wheel` and installed `contractguard` in editable mode (`pip install -e .`) inside `.venv`.
+3. Updated `tests/test_cli.py` to use `_make_runner()` to maintain compatibility across Click versions (8.1 `mix_stderr` vs 8.5+ `capture`).
+4. Verified all 414 tests pass within `.venv` in 48.15s, and verified `contractguard audit` CLI executes directly from `.venv\Scripts\contractguard.exe`.
+
+**Decision:** Project completed for hackathon submission with 414 passing tests, full documentation, live self-verification, virtual environment fully populated and functional, and zero git commands executed against the project repo.
+
+
 
 
 

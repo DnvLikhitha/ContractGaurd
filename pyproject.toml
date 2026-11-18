@@ -27,6 +27,11 @@ dev = [
 [project.scripts]
 contractguard = "contractguard.cli:main"
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["contractguard*"]
+exclude = ["tests*", "transcripts*", "sample-broken-app*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

@@ -36,10 +36,6 @@ cg-shadow*/
 Thumbs.db
 .DS_Store
 
-# ── Intentionally NOT ignored ─────────────────────────────────────────────────
+# ── Intentionally tracked metadata ─────────────────────────────────────────────
 # CLAUDE.md  AGENTS.md  PRD.md  ARCHITECTURE.md  TECH_STACK.md
 # AI_LOG.md  arena.json  README.md  transcripts/
-2026-11-18-003405-never-run-git-add-commit-or-push-i-handle-all(1st).txt
-CLAUDE.md
-PRD.md
-ARCHITECTURE.md

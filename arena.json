@@ -8,6 +8,14 @@
   "team": ["TODO"],
   "description": "Audits a repository as a living contract – cross-checks docs, env templates and manifests against source code, triages findings, and verifies every fix in a shadow git worktree before keeping it.",
   "entry_command": "contractguard audit <path>",
-  "tech_stack": ["Python 3.10+", "Click", "Rich", "Pydantic", "Groq (optional)"],
-  "status": "in-progress"
+  "verification_command": "pytest",
+  "self_verification": "SELF_VERIFICATION.md",
+  "tech_stack": [
+    "Python 3.10+",
+    "Click",
+    "Rich",
+    "Pydantic",
+    "Groq (optional)"
+  ],
+  "status": "complete"
 }

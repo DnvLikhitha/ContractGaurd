@@ -13,6 +13,14 @@ from pathlib import Path
 from contractguard.cli import cli
 
 
+def _make_runner() -> CliRunner:
+    """Create a CliRunner compatible across Click versions (8.1 mix_stderr vs 8.5+)."""
+    try:
+        return CliRunner(mix_stderr=False)
+    except TypeError:
+        return CliRunner()
+
+
 def make_repo(tmp_path: Path) -> Path:
     """Build a minimal valid repo for CLI tests."""
     (tmp_path / "README.md").write_text("# Test App\n")
@@ -42,7 +50,7 @@ class TestAuditCommand:
 
     def test_audit_json_flag_outputs_valid_json(self, tmp_path):
         make_repo(tmp_path)
-        runner = CliRunner(mix_stderr=False)
+        runner = _make_runner()
         result = runner.invoke(cli, ["audit", str(tmp_path), "--json"])
         assert result.exit_code == 0, result.output
         # JSON should be parseable
@@ -53,7 +61,7 @@ class TestAuditCommand:
         # Plant a known issue so there's at least one finding
         make_repo(tmp_path)
         (tmp_path / "src" / "bad.py").write_text("DEBUG = True\n")
-        runner = CliRunner(mix_stderr=False)
+        runner = _make_runner()
         result = runner.invoke(cli, ["audit", str(tmp_path), "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -65,7 +73,7 @@ class TestAuditCommand:
         make_repo(tmp_path)
         # Add an undocumented env var to app.py
         (tmp_path / "src" / "app.py").write_text("import os\nDB = os.getenv('SECRET_UNLISTED_TOKEN')\n")
-        runner = CliRunner(mix_stderr=False)
+        runner = _make_runner()
         result = runner.invoke(cli, ["audit", str(tmp_path), "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -78,7 +86,7 @@ class TestAuditCommand:
         # Add an unused dependency to requirements.txt and an orphaned file
         (tmp_path / "requirements.txt").write_text("unused-mock-package==1.0.0\n")
         (tmp_path / "src" / "dead_module.py").write_text("def abandoned(): pass\n")
-        runner = CliRunner(mix_stderr=False)
+        runner = _make_runner()
         result = runner.invoke(cli, ["audit", str(tmp_path), "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)

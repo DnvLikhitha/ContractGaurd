@@ -567,6 +567,59 @@ Do not run any git commands in this repo. Stop and summarize."
 
 **Decision:** Phase 8 complete. All core features (auditors, triage, fixer, sandbox gate, reporter, CLI audit and heal) are fully implemented and verified end to end. Next steps: seed `sample-broken-app/` with planted issues to verify zero false negatives, run self-verification to produce `SELF_VERIFICATION.md`, and polish documentation.
 
+---
+
+## Entry 12 — Phase 9: sample-broken-app & rollback verification (Antigravity / Google DeepMind)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-11-18 |
+| **Tool** | Antigravity (Google DeepMind AI assistant, agy) |
+| **Model** | Gemini 3.8 Flash |
+| **Phase** | Phase 9 — Seeded demo application & rollback verification |
+
+**Goal:** Create `sample-broken-app/` as a working Python and Node.js application seeded with:
+1. Hardcoded FAKE secret (`API_KEY = "sk_demo_not_a_real_key_12345"`, commented as seeded).
+2. `DEBUG=True`.
+3. CORS wildcard (`allow_origins = ["*"]` and Node `Access-Control-Allow-Origin: *`).
+4. Missing env vars from `.env.example` (`APP_EXTRA_SECRET_TOKEN`, `NODE_SESSION_SECRET`).
+5. Unused dependencies (`unused-xml-parser` and `unused-node-lib`).
+6. Orphan file (`services/orphan_service.py`).
+7. Nonexistent README endpoint (`GET /api/v1/nonexistent_stats`).
+8. Tempting fix that breaks a test so the sandbox rolls it back (`legacy-compat-dep` in `requirements.txt` guarded by `test_legacy_dependency_contract()`).
+Add integration test `tests/test_sample_broken_app.py`, run audit and heal, and show output.
+
+**Prompt summary:** "Phase 9. Create sample-broken-app/ as a small Python and Node mix
+with working tests, seeded with: a hardcoded FAKE secret (obviously fake, e.g.
+sk_demo_not_a_real_key_123, with a comment that it is seeded), DEBUG=True, CORS '*',
+env vars missing from .env.example, an unused dependency, an orphan file, a README endpoint
+that does not exist, and one tempting fix that breaks a test so the sandbox must roll it
+back. Add an integration test asserting every seeded issue is found and the bad fix is
+rolled back. Run audit and heal on it and show me the output. Run pytest. Append a phase
+entry to AI_LOG.md. Do not run any git commands in this repo. Stop and summarize."
+
+**Seeded application files created in `sample-broken-app/`:**
+- `app.py`: contains fake secret, `DEBUG=True`, CORS wildcard, missing env read, and discount calculation function.
+- `server.js`: Node Express module with CORS wildcard and missing `process.env.NODE_SESSION_SECRET`.
+- `package.json`: manifests Express and unused `unused-node-lib`.
+- `.env.example`: only defines `DATABASE_URL`, omitting Python and Node vars.
+- `requirements.txt`: lists `legacy-compat-dep==1.0.0` and `unused-xml-parser==1.2.3`.
+- `services/orphan_service.py`: contains unreferenced `dead_calculator`.
+- `test_app.py`: working pytest suite with `test_calculate_discount()` and `test_legacy_dependency_contract()`.
+- `README.md`: documents valid endpoint and phantom endpoint `GET /api/v1/nonexistent_stats`.
+
+**Integration tests written (`tests/test_sample_broken_app.py`):**
+- `test_all_seeded_issues_detected`: asserts zero false negatives across security, drift, and slop auditors.
+- `test_heal_rolls_back_bad_fix_and_keeps_good_fixes`: executes `heal` in sandbox, verifies safe fixes (e.g. `APP_EXTRA_SECRET_TOKEN`) are `VERIFIED` while the tempting fix (`legacy-compat-dep`) fails tests and is recorded as `ROLLED_BACK`.
+
+**Pytest run:**
+- 414/414 tests passed across all 11 test modules in 162.80s. Zero failures.
+
+**Human corrections:** None.
+
+**Decision:** Phase 9 complete. All seeded defects detected with zero false negatives, and rollback gate verified. Next: final deliverables (`SELF_VERIFICATION.md`, `arena.json`, `README.md` completion).
+
+
 
 
 
